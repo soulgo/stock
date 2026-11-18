@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""grid_plan.py —— 生成每只 ETF 的网格档位表（读 grid_data.json，不联网）"""
+"""grid_plan.py —— 生成每只 ETF 的网格档位表（读 data/grid_data.json，不联网）"""
 import json
 import math
+import sys
 import os
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from paths import data  # noqa: E402  路径唯一真源（ADR-001）
+
 
 # gap: 网格间距；on: 是否纳入网格；reason: 不做的原因
 SPEC = {
@@ -22,7 +27,7 @@ MIN_CELL = 300.0   # 每格最小金额（元），低于此佣金占比过高
 
 
 def main():
-    rows = json.load(open(os.path.join(HERE, "grid_data.json"), encoding="utf-8"))
+    rows = json.load(open(data("grid_data.json"), encoding="utf-8"))
     out = []
     for r in rows:
         sp = SPEC.get(r["code"], {})
@@ -68,7 +73,7 @@ def main():
         print(f"   下一买 {o['buy_next']}  下一卖 {o['sell_next']}")
         print("   " + "  ".join(f"{i}:{v:.3f}" for i, v in enumerate(o["levels"])))
         print()
-    json.dump(out, open(os.path.join(HERE, "grid_plan.json"), "w", encoding="utf-8"),
+    json.dump(out, open(data("grid_plan.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
     print("已写出 grid_plan.json")
 

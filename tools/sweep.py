@@ -10,7 +10,7 @@ sweep.py —— 全市场 ETF 大级别位置扫描（交易员视角，不做�
 用法：
     python sweep.py                # 全市场
     python sweep.py --min-amt 3000 # 只扫成交额>=3000万的
-输出：sweep_result.json
+输出：data/sweep_result.json
 """
 import json
 import math
@@ -25,7 +25,11 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
       "Referer": "https://quote.eastmoney.com/"}
 EM_LIST = "https://push2.eastmoney.com/api/qt/clist/get"
 EM_HIS = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from paths import data  # noqa: E402  路径唯一真源（ADR-001）
+
 
 
 def _get(url, timeout=20):
@@ -211,7 +215,7 @@ def main():
               % (r["name"][:10], r["code"], r["close"], r["dd"], r["pos"],
                  r["dist_low"], r["ma240_dev"] or 0, r["years"], r["vol_ann"], r["score"]))
 
-    json.dump(results, open(os.path.join(HERE, "sweep_result.json"), "w", encoding="utf-8"),
+    json.dump(results, open(data("sweep_result.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
     print(f"\n已写出 sweep_result.json（{len(results)} 条）")
 

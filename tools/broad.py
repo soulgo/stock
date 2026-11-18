@@ -12,14 +12,18 @@
 
 用法：
     python broad.py            # 打印宽基全景
-    python broad.py --json     # 同时落盘 broad_snapshot.json
+    python broad.py --json     # 同时落盘 data/broad_snapshot.json
 """
 import json
 import os
 import sys
 import urllib.request
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from paths import data  # noqa: E402  路径唯一真源（ADR-001）
+
 UA = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
 
 # 指数族：(族名, 匹配关键词, 是否国家队载具)
@@ -95,7 +99,7 @@ def main():
 
     # 位置数据来自 sweep_result.json
     pos = {}
-    sp = os.path.join(BASE, "sweep_result.json")
+    sp = data("sweep_result.json")
     if os.path.exists(sp):
         for r in json.load(open(sp, encoding="utf-8")):
             pos[r["code"]] = r
@@ -137,7 +141,7 @@ def main():
         tot, ntot, ntot / tot * 100, sum(r["amt"] for r in nat)))
 
     if "--json" in sys.argv:
-        with open(os.path.join(BASE, "broad_snapshot.json"), "w", encoding="utf-8") as f:
+        with open(data("broad_snapshot.json"), "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False, indent=1)
         print("\n已写入 broad_snapshot.json（%d 个指数族）" % len(rows))
 

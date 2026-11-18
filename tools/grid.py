@@ -19,7 +19,11 @@ from datetime import datetime, timedelta
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 EM_HIS = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from paths import data  # noqa: E402  路径唯一真源（ADR-001）
+
 
 
 def secid(code):
@@ -130,7 +134,7 @@ def analyse(code, name, shares, cost, years=4):
 
 def main():
     want = [a for a in sys.argv[1:] if not a.startswith("-")]
-    with open(os.path.join(HERE, "portfolio.json"), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, "portfolio.json"), encoding="utf-8") as f:
         pf = json.load(f)
 
     print(f"【网格参数测算】{datetime.now():%Y-%m-%d %H:%M}  数据：东财日线 不复权\n")
@@ -166,7 +170,7 @@ def main():
               % (r["name"][:10], r["target"], r["stop"], r["hi4y"], r["lo4y"], ok,
                  r["stop_vs_lo4y"]))
 
-    with open(os.path.join(HERE, "grid_data.json"), "w", encoding="utf-8") as f:
+    with open(data("grid_data.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, ensure_ascii=False, indent=2)
     print("\n已写出 grid_data.json")
 
