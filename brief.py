@@ -26,6 +26,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import statistics
@@ -33,7 +34,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from paths import DATA, REPORTS, ROOT, data   # 路径唯一真源（ADR-001）
 import panel                                   # 面板契约（ADR-003）
@@ -244,7 +245,8 @@ def load_mx():
             d = json.load(f)
         age = (datetime.now() - datetime.strptime(d["written"], "%Y-%m-%d %H:%M:%S")).total_seconds() / 60
         MX["age"] = age
-        MX["data"] = d if age <= MX_TTL else None
+        source_date = d.get("date")
+        MX["data"] = d if 0 <= age <= MX_TTL and source_date == datetime.now().strftime("%Y-%m-%d") else None
     except Exception:
         MX["data"] = None
 
@@ -252,7 +254,7 @@ def load_mx():
 def quote_mx(code):
     """连接器报价 → 与 quote_em/quote_tx 同构。volume 单位股，这里折成手。"""
     d = ((MX["data"] or {}).get("quotes") or {}).get(code)
-    if not d:
+    if not d or d.get("time") != datetime.now().strftime("%Y-%m-%d"):
         return None
     vol = d.get("volume") or 0
     return {
@@ -511,7 +513,10 @@ def fflow(code):
     """当日分钟级资金流，返回最新累计值（元）。连接器快照优先：东财这份实测滞后 15 分钟。"""
     d = ((MX["data"] or {}).get("flows") or {}).get(code)
     if d:
-        return d
+        required = ("main", "huge", "big", "mid", "small")
+        if d.get("date") == date.today().isoformat() and all(d.get(key) is not None for key in required):
+            return d
+        return None
     d = jget(f"https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid={secid(code)}"
              f"&ut={TOKEN}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56&klt=1&lmt=0")
     ks = (d.get("data") or {}).get("klines") or []
@@ -635,15 +640,15 @@ def market_data(cfg=None, mode="noon"):
 
     idx = [ff.get(c) for c in ("sh000001", "sz399001") if ff.get(c)]
     if idx:
-        out["idx"] = {"main": sum(x["main"] for x in idx),
-                      "huge": sum(x["huge"] for x in idx),
-                      "big": sum(x["big"] for x in idx),
-                      "mid": sum(x["mid"] for x in idx),
-                      "small": sum(x["small"] for x in idx),
-                      "main5": sum(x.get("main5") or 0 for x in idx),
-                      "main10": sum(x.get("main10") or 0 for x in idx),
-                      "main20": sum(x.get("main20") or 0 for x in idx),
-                      "amount": (mk.get("amount") or 0) * 1e8}   # 概览给的是「亿」
+        complete = (len(idx) == 2 and all(x.get("date") for x in idx)
+                    and len({x["date"] for x in idx}) == 1)
+        def flow_sum(key):
+            vals = [x.get(key) for x in idx]
+            return sum(vals) if complete and all(value is not None for value in vals) else None
+        out["idx"] = {key: flow_sum(key) for key in
+                      ("main", "huge", "big", "mid", "small", "main5", "main10", "main20")}
+        out["idx"].update({"coverage": len(idx), "amount": (mk.get("amount") or 0) * 1e8})
+        out["idx"]["flow_date"] = min((x.get("date") for x in idx if x.get("date")), default=None)
 
     if mk:
         out["market"] = {"up": mk.get("up"), "down": mk.get("down"),
@@ -682,22 +687,29 @@ def market_data(cfg=None, mode="noon"):
     exts = [(c, fam, ff.get(c) or {}, etf.get(c)) for c, fam in NATIONAL_EXT
             if ff.get(c) or etf.get(c)]
     if nats:
+        def national_sum(records, key, expected):
+            values = [record[2].get(key) for record in records]
+            return sum(values) if len(values) == expected and all(value is not None for value in values) else None
         fam_sum = {}
-        for c, fam, fl, et in nats:
-            fam_sum[fam] = fam_sum.get(fam, 0) + ((fl or {}).get("main", 0))
+        for fam in FAM_ORDER:
+            members = [record for record in nats if record[1] == fam]
+            if members:
+                fam_sum[fam] = national_sum(members, "main", sum(family == fam for code, family in NATIONAL))
         out["nat"] = {
-            "m1": sum((x[2] or {}).get("main", 0) for x in nats),
-            "m5": sum((x[2] or {}).get("main5", 0) for x in nats),
+            "m1": national_sum(nats, "main", len(NATIONAL)),
+            "m5": national_sum(nats, "main5", len(NATIONAL)),
             "size": sum((x[3] or {}).get("size") or 0 for x in nats),
             "n": len(nats),
-            "inflow": len([x for x in nats if (x[2] or {}).get("main", 0) > 0]),
+            "inflow": len([x for x in nats if x[2].get("main") is not None and x[2]["main"] > 0]),
+            "observed": sum(x[2].get("main") is not None for x in nats),
+            "expected": len(NATIONAL),
             "ext": None if not exts else {
-                "m": sum((x[2] or {}).get("main", 0) for x in exts),
+                "m": national_sum(exts, "main", len(NATIONAL_EXT)),
                 "size": sum((x[3] or {}).get("size") or 0 for x in exts),
-                "in": len([x for x in exts if (x[2] or {}).get("main", 0) > 0]),
+                "in": len([x for x in exts if x[2].get("main") is not None and x[2]["main"] > 0]),
                 "n": len(exts)},
             "fam": [(f, fam_sum[f]) for f in FAM_ORDER if f in fam_sum],
-            "detail": [(c, (fl or {}).get("main", 0)) for c, fam, fl, et in nats + exts],
+            "detail": [(c, fl.get("main")) for c, fam, fl, et in nats + exts],
         }
 
     try:                      # K01 份额指数（etf_flow.py 每日写一份汇总，缺失就跳过）
@@ -718,10 +730,14 @@ def market_render(d, no):
     if d["idx"]:
         i = d["idx"]
         amt = i["amount"]
-        ratio = f"（占成交额 {i['main']/amt*100:+.1f}%）" if amt else ""
-        lines.append(f"  两市主力        {wan(i['main'])}{ratio}")
-        lines.append(f"  结构            超大单 {wan(i['huge'])}　大单 {wan(i['big'])}　"
-                     f"中单 {wan(i['mid'])}　小单 {wan(i['small'])}")
+        ratio = f"（占成交额 {i['main']/amt*100:+.1f}%）" if amt and i.get("main") is not None else ""
+        flow_date = f"（数据日 {i['flow_date']}）" if i.get("flow_date") else "（数据日未知）"
+        lines.append(f"  两市主力        {wan(i['main']) if i.get('main') is not None else '未知'}{ratio}")
+        lines.append(f"  资金流口径      {flow_date}（指数覆盖 {i['coverage']}/2）")
+        lines.append("  结构            " + "　".join(
+            f"{name} {wan(i[key]) if i.get(key) is not None else '未知'}"
+            for name, key in (("超大单", "huge"), ("大单", "big"),
+                              ("中单", "mid"), ("小单", "small"))))
         lines.append(f"  主力5日         {wan(i['main5'])}")
         lines.append(f"  主力10日        {wan(i['main10'])}")
         lines.append(f"  主力20日        {wan(i['main20'])}")
@@ -752,6 +768,7 @@ def market_render(d, no):
     if nat:
         lines.append(f"  载具今日        {wan(nat['m1'])}（{nat['n']} 只，{nat['inflow']} 只净流入）")
         lines.append(f"  载具5日         {wan(nat['m5'])}")
+        lines.append(f"  载具覆盖        资金流实测 {nat['observed']}/{nat['expected']}；净流入只数仅统计已观测载具")
         lines.append(f"  载具规模        {nat['size']/1e8:,.0f}亿")
         e = nat["ext"]
         if e:
@@ -774,6 +791,8 @@ def market_render(d, no):
                          + f"｜加仓指数 {k01.get('index', 100):.1f}")
             if k01.get("note"):
                 lines.append(f"  份额口径        {k01['note']}")
+            if "observed" in k01:
+                lines.append(f"  份额覆盖        实测 {k01['observed']}/{k01['pool']}，前值顺延 {k01.get('carried', 0)}")
         except Exception:
             pass
     return lines
@@ -1000,13 +1019,18 @@ def tstats_block(no, cfg, mode="noon"):
         print("  无数据（data/t_ledger.json 缺失或为空）")
         return
     ta = (cfg.get("cash") or {}).get("total_assets") or 0
-    realized = sum((x.get("realized") or 0) for x in items.values())
+    totals = realized_trade_totals(ld)
+    realized = totals["t"]
     print(f"  已实现收益      {realized:+,.2f} 元"
           + (f"（占总资产 {realized/ta*100:.2f}%）" if ta else ""))
-    parts = [f"{c} {(x.get('realized') or 0):+,.2f}" for c, x in items.items() if x.get("realized")]
+    print(f"  收益归因        调仓 {totals['rebalance']:+,.2f} 元｜退出 {totals['exit']:+,.2f} 元"
+          f"｜待核 {totals['unconfirmed']} 条（未计入已确认收益）")
+    parts = [f"{c} {(x.get('realized') or 0):+,.2f}" for c, x in items.items()
+             if x.get("kind") == "t" and realized_trade_totals({"items": [x]})["unconfirmed"] == 0]
     if parts:
         print(f"  收益构成        {'｜'.join(parts)}")
-    rounds = sum(x.get("rounds") or 0 for x in items.values())
+    rounds = sum(x.get("rounds") or 0 for x in items.values()
+                 if x.get("kind") == "t" and realized_trade_totals({"items": [x]})["unconfirmed"] == 0)
     opens = [f"{c} {x['open_note']}" for c, x in items.items() if x.get("open_note")]
     print(f"  T往返           完成 {rounds} 次｜未结 {len(opens)} 笔"
           + (f"（{'；'.join(opens)}）" if opens else ""))
@@ -1043,6 +1067,23 @@ def tstats_block(no, cfg, mode="noon"):
               f"≈ 成本降 {drop:.4f}｜回本涨幅每降 1 个百分点需 {need:.1f} 次成功 T")
     print("  做T口径        T 收益只算同一标的的买卖差价；加仓摊薄的成本变化不计入，"
           "避免把加仓记成降本；往返次数只算「买回+卖出」都完成的")
+
+
+def realized_trade_totals(ledger):
+    totals = {"t": 0.0, "rebalance": 0.0, "exit": 0.0, "unconfirmed": 0}
+    for item in ledger.get("items") or []:
+        confirmed = item.get("confirmed") is True or item.get("status") == "已确认"
+        if (not confirmed or item.get("kind") not in ("t", "rebalance", "exit")
+                or item.get("realized") is None
+                or (item.get("kind") == "t" and (item.get("rounds") or 0) <= 0)):
+            totals["unconfirmed"] += 1
+        elif item["kind"] == "exit":
+            totals["exit"] += float(item.get("realized") or 0)
+        elif item["kind"] == "rebalance":
+            totals["rebalance"] += float(item.get("realized") or 0)
+        elif item["kind"] == "t":
+            totals["t"] += float(item.get("realized") or 0)
+    return totals
 
 
 # ---------------------------------------------------------------- 实时快讯
@@ -1802,7 +1843,7 @@ _SIG_COLS = "| date | key | value | band | hs300 | fwd20 |\n|---|---|---|---|---
 _SIG_HEAD = (
     "# 指标读数台账\n\n"
     "> 一行 = 一个指标在某天的一次读数。**脚本自动写入，不要手工改历史行**。\n"
-    "> 用途：把 value / band 与后续 20 个交易日的沪深300 涨跌对齐，按 band 分组算平均收益，\n"
+    "> 用途：把 K04 的 value / band 与后续第 20 个有效观测日的沪深300 涨跌对齐，按 band 分组观察。\n"
     "> 和全样本比。跑 `python brief.py --signals backfill` 回填 fwd20（完全离线，靠表内未来的点位算）。\n\n"
     "## 字段\n\n"
     "| 字段 | 含义 |\n|---|---|\n"
@@ -1811,7 +1852,7 @@ _SIG_HEAD = (
     "| value | 主读数，不带单位（比价=倍数，脉冲=pp） |\n"
     "| band | 当时所处档位，**决定动作的就是它**，回溯按这一列分组 |\n"
     "| hs300 | 当时沪深300点位，用来算未来收益 |\n"
-    "| fwd20 | 20 个交易日后的涨跌幅，未到期留空 |\n\n"
+    "| fwd20 | K04 后续第 20 个有效观测日的涨跌幅；缺日则跨期更长，非严格 20 交易日；K05 月度点位不混用，未成熟留空 |\n\n"
 )
 
 _SIG = {}          # 本次运行收集到的读数：key -> (value, band, hs300)
@@ -1827,7 +1868,8 @@ def _sig_read():
     """(说明部分, 台账行列表)。说明部分可手工补笔记，脚本只重写台账表。"""
     txt = ""
     if os.path.exists(SIGNALS_MD):
-        txt = open(SIGNALS_MD, encoding="utf-8").read()
+        with open(SIGNALS_MD, encoding="utf-8") as signal_file:
+            txt = signal_file.read()
     pre = txt.split(_SIG_TITLE)[0] if txt else _SIG_HEAD
     rows = [s.strip() for s in txt.splitlines() if s.strip().startswith("| 20")]
     return pre, rows
@@ -1862,8 +1904,7 @@ def signals_flush(mode="noon"):
 
 
 def signals_backfill():
-    """回填 fwd20：同一 key 的第 i 行对比第 i+20 行的沪深300点位。
-    完全离线——未来那天的点位已经记在表里了。中间有缺日会让偏移 ±1~2 天，不影响分组结论。"""
+    """以台账中出现的沪深300有效读数日期，回填后续第20个观测日的涨跌幅。"""
     if not os.path.exists(SIGNALS_MD):
         print("signals.md 不存在，先跑一次午盘面板攒数据")
         return
@@ -1874,18 +1915,35 @@ def signals_backfill():
         idx_by_key.setdefault(c[1], []).append(i)
 
     n, skipped = 0, 0
-    for key, idx in idx_by_key.items():
-        for j, i in enumerate(idx):
-            if j + 20 >= len(idx):
+    by_date = {}
+    for cells_row in cells:
+        try:
+            if cells_row[1] != "K04":
                 continue
+            day = date.fromisoformat(cells_row[0])
+            value = float(cells_row[4])
+            if math.isfinite(value) and value > 0:
+                by_date.setdefault(day, value)
+        except (ValueError, IndexError):
+            continue
+    observed_dates = sorted(by_date)
+    for key, idx in idx_by_key.items():
+        for i in idx:
             try:
-                a, b = float(cells[i][4]), float(cells[idx[j + 20]][4])
+                if cells[i][1] != "K04":
+                    continue
+                signal_date = date.fromisoformat(cells[i][0])
+                a = float(cells[i][4])
             except (ValueError, IndexError):
                 skipped += 1
                 continue
-            if a <= 0:
+            if not math.isfinite(a) or a <= 0:
                 skipped += 1
                 continue
+            future = [day for day in observed_dates if day > signal_date]
+            if len(future) < 20:
+                continue
+            b = by_date[future[19]]
             cells[i][5] = f"{(b / a - 1) * 100:+.2f}%"
             n += 1
 

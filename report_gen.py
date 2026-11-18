@@ -73,6 +73,7 @@ decision JSON 结构（mode 通用的字段）：
 import argparse
 import html
 import json
+import math
 import os
 import re
 import sys
@@ -90,6 +91,37 @@ from panel import (          # 面板契约：解析集中到 panel.py（ADR-003
 
 
 OUT_DIR = REPORTS
+
+
+def validate_decision(mode, decision, holdings, panel_data=None):
+    actions = decision.get("actions") or []
+    if len(actions) > 3:
+        raise ValueError("动作数量超过上限 3")
+    levels = (panel_data or {}).get("levels") or {}
+    if isinstance(levels, list):
+        levels = {row["name"]: row for row in levels}
+    for action in actions:
+        code = str(action.get("code", ""))
+        if code not in holdings:
+            raise ValueError("动作标的必须属于当前持仓标的")
+        if action.get("side") not in ("buy", "sell"):
+            raise ValueError("side 必须是 buy 或 sell")
+        if not all(action.get(key) is not None and str(action.get(key, "")).strip() for key in
+                   ("name", "direction", "trigger", "shares", "target", "invalid", "why")):
+            raise ValueError("动作缺少关键字段")
+        name = short_name(holdings[code].get("name") or action["name"])
+        level = levels.get(name, {})
+        if panel_data is not None:
+            if level.get("state") != "震荡区间":
+                raise ValueError("动作标的缺少可执行的震荡区间状态")
+            if any(str(level.get(key) or "").strip() in ("", "—") for key in ("sup", "res")):
+                raise ValueError("动作标的缺少支撑/压力关键位")
+            if mode == "noon":
+                flow = next((row for row in panel_data.get("flows", []) if row.get("name") == name), {})
+                if not all(isinstance(flow.get(key), (int, float)) and math.isfinite(flow[key])
+                           for key in ("main", "huge", "big", "mid", "small")):
+                    raise ValueError("动作标的资金流不完整")
+    return True
 
 E = lambda s: html.escape(str(s), quote=True)
 
@@ -768,11 +800,17 @@ def render_market(mk, full=False):
     否则 100% 进度下还写「历史同时点已走完」会让人误以为是盘中读数。"""
     if not mk:
         return ""
-    fl = {"main": mk["main"] or 0, "huge": mk["huge"] or 0, "big": mk["big"] or 0,
-          "mid": mk["mid"] or 0, "small": mk["small"] or 0,
+    fl = {"main": mk["main"], "huge": mk["huge"], "big": mk["big"],
+          "mid": mk["mid"], "small": mk["small"],
           "tag": "两市（沪指 + 深成指口径）"}
+    flow_html = (render_flow_bar(fl) if all(fl[key] is not None for key in
+                 ("main", "huge", "big", "mid", "small")) else '<div class="mb-sub">资金流不完整，暂不绘制分档</div>')
     c = cls(mk["main"] or 0)
     pills = []
+    if mk.get("flow_scope"):
+        pills.append(f'<span class="pill">{E(mk["flow_scope"])}</span>')
+    if mk.get("nat_scope"):
+        pills.append(f'<span class="pill">{E(mk["nat_scope"])}</span>')
     for lb, k in (("5日", "main5"), ("10日", "main10"), ("20日", "main20")):
         if mk.get(k) is not None:
             pills.append(f'<span class="pill {cls(mk[k])}">{lb}主力 <b>{_yi(mk[k],0)}</b></span>')
@@ -827,6 +865,8 @@ def render_market(mk, full=False):
         nat += (f'<div class="mb-sub">份额 {k01["date"]} 主池 {k01["pool"]} 只合计 '
                 f'<b>{k01["shares"]/1e8:,.1f}亿份</b>{E(k01["chg"])}'
                 f'｜加仓指数 <b>{k01["index"]:.1f}</b></div>')
+        if k01.get("coverage"):
+            nat += f'<div class="mb-sub">{E(k01["coverage"])}</div>'
 
     return (plain("market") +
             f'<div class="mbox"><div class="mb-hd"><b>两市主力净流入</b>'
@@ -835,7 +875,7 @@ def render_market(mk, full=False):
             f'<span class="u">元</span></div>'
             f'<div class="mb-pills">{"".join(pills)}</div>'
             f'{cut_html}'
-            f'<div class="mb-sep"></div>{render_flow_bar(fl)}{nat}</div>')
+            f'<div class="mb-sep"></div>{flow_html}{nat}</div>')
 
 
 def render_margin(mg):
@@ -1324,6 +1364,9 @@ def main():
 
     decision = json.loads(read_text(a.decision))
     d, src = read_panel(a.data, a.mode)
+    with open(os.path.join(os.path.dirname(__file__), "portfolio.json"), encoding="utf-8") as portfolio_file:
+        holdings = {str(item["code"]): item for item in json.load(portfolio_file).get("holdings", [])}
+    validate_decision(a.mode, decision, holdings, d)
     sys.stderr.write("面板来源：%s\n" % src)
     os.makedirs(OUT_DIR, exist_ok=True)
     date = decision.get("date") or d["date"]

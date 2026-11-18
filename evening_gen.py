@@ -223,7 +223,14 @@ def render_watch(items):
     return "".join(s)
 
 
+def validate_decision(decision):
+    if decision.get("actions") or decision.get("skip"):
+        raise ValueError("晚报只复盘与列明日关注，不接受做T动作或不动清单")
+    return True
+
+
 def render(mode, d, decision):
+    validate_decision(decision)
     date = decision.get("date") or d["date"]
     title = "晚间复盘"
     subtitle = decision.get("subtitle") or f'{d["time"]} · 21:00 收盘口径'
@@ -378,6 +385,7 @@ def main():
     a = ap.parse_args()
 
     decision = json.loads(read_text(a.decision))
+    validate_decision(decision)
     d, src = read_panel(a.data, "evening")
     sys.stderr.write("面板来源：%s\n" % src)
 

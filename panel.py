@@ -353,10 +353,12 @@ def parse_market(text):
         k01 = {"date": mk1.group(1), "pool": int(mk1.group(2)),
                "shares": float(mk1.group(3).replace(",", "")) * 1e8,
                "chg": mk1.group(4).strip("（）"), "index": float(mk1.group(5))}
+        if rows.get("份额覆盖"):
+            k01["coverage"] = rows["份额覆盖"]
 
     md = re.match(r"(\d{4}-\d{2}-\d{2})", rows.get("概览统计日", ""))
 
-    return {"main": val("两市主力"), "huge": st.get("超大单"), "big": st.get("大单"),
+    result = {"main": val("两市主力"), "huge": st.get("超大单"), "big": st.get("大单"),
             "mid": st.get("中单"), "small": st.get("小单"),
             "main5": val("主力5日"), "main10": val("主力10日"), "main20": val("主力20日"),
             "up": up, "down": down, "limit_up": lu, "limit_dn": ld,
@@ -367,6 +369,11 @@ def parse_market(text):
             "nat_in": int(natsum.group(3)) if natsum else 0,
             "nat5": val("载具5日"), "nat_size": val("载具规模"), "nat": nat,
             "cut": cut, "fam": fam, "ext": ext, "k01": k01}
+    if rows.get("资金流口径"):
+        result["flow_scope"] = rows["资金流口径"]
+    if rows.get("载具覆盖"):
+        result["nat_scope"] = rows["载具覆盖"]
+    return result
 
 def parse_margin(text):
     """解析「融资融券」段。行格式与大盘资金段一致：两空格 + 标签 + 2 空格以上 + 数值。

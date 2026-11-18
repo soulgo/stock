@@ -15,8 +15,9 @@ mx_snapshot.py — 把腾讯自选股连接器（westock-mcp）的原始返回�
   data_fund_flow  MainNetFlow(主力) / JumboNetFlow(超大单) / BlockNetFlow(大单)
                   / MidNetFlow(中单) / SmallNetFlow(小单)
 
-快照带 written 时间戳，brief.py 超过 TTL（3 分钟）即视为过期并回落实时接口，
-所以本脚本必须「取数后立刻跑」，不能拿早上的快照喂下午的报告。
+written 是本机写入时间，brief.py 要求当日且写入后 0~3 分钟；报价另查源 time，
+资金流另保留 EndDate。源日期缺失不以本机时钟补造；缺字段保留 None，真实零保留 0。
+连接器目前仅提供源日期，无法证明分钟级新鲜；重写旧数据不能使它成为当日数据。
 """
 
 import argparse
@@ -87,7 +88,8 @@ def main():
     for path in [p.strip() for p in a.quotes.split(",") if p.strip()]:
         if not os.path.exists(path):
             continue
-        q = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as source_file:
+            q = json.load(source_file)
         for k, v in (q.get("data") or {}).items():
             if not v:
                 continue
@@ -111,16 +113,16 @@ def main():
     for path in [p.strip() for p in (a.flows or "").split(",") if p.strip()]:
         if not os.path.exists(path):
             continue
-        f = json.load(open(path, encoding="utf-8"))
-        now_hm = datetime.now().strftime("%H:%M")
+        with open(path, encoding="utf-8") as source_file:
+            f = json.load(source_file)
         for k, v in (f.get("data") or {}).items():
             arr = (v or {}).get("data") or []
             if not arr:
                 continue
             r = arr[-1]
-            num = lambda key: float(r.get(key) or 0)
+            num = lambda key: float(r[key]) if r.get(key) not in (None, "") else None
             e = {
-                "time": now_hm, "main": num("MainNetFlow"), "huge": num("JumboNetFlow"),
+                "date": r.get("EndDate"), "time": r.get("EndDate"), "main": num("MainNetFlow"), "huge": num("JumboNetFlow"),
                 "big": num("BlockNetFlow"), "mid": num("MidNetFlow"),
                 "small": num("SmallNetFlow"),
                 # 多日累计：判断国家队是托底还是退潮，单一交易日不够
@@ -130,10 +132,13 @@ def main():
             flows[bare(k)] = e
             flows_full[str(k).strip().lower()] = e
 
-    market = pick_market(json.load(open(a.market, encoding="utf-8"))) \
-        if a.market and os.path.exists(a.market) else {}
-    etf = pick_etf(json.load(open(a.etf, encoding="utf-8"))) \
-        if a.etf and os.path.exists(a.etf) else {}
+    market, etf = {}, {}
+    if a.market and os.path.exists(a.market):
+        with open(a.market, encoding="utf-8") as source_file:
+            market = pick_market(json.load(source_file))
+    if a.etf and os.path.exists(a.etf):
+        with open(a.etf, encoding="utf-8") as source_file:
+            etf = pick_etf(json.load(source_file))
 
     out = a.out or os.path.join(DATA, f"_mx_{datetime.now():%Y-%m-%d}.json")
     payload = {"date": datetime.now().strftime("%Y-%m-%d"),

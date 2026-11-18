@@ -6,8 +6,7 @@
 每次运行会覆盖当天记录（同日重复跑不会写重），并刷新 data/k01_index.json 汇总。
 
 用法：
-    python etf_flow.py --mx data/_mx_2026-11-16.json   # 首选：读连接器快照（total_shares）
-    python etf_flow.py                                  # 兜底：直连东财 push2 的 f84
+    python etf_flow.py --mx data/_mx_2026-11-16.json   # 必须：读连接器快照（total_shares）
     python etf_flow.py --summary                        # 只读已有 csv，打印近期窗口
 
 口径（2026-11-16 改）：
@@ -17,14 +16,16 @@
 
     日净流入 ≈ (今日份额 − 上一记录日份额) × 今日价格
     加仓指数 = 100 × 当日主池总份额 ÷ 区间首日主池总份额
-    缺口处理：某只当日无数据则不计入该日，指数按「已有前值顺延」累计，
-    避免缺数被误读成赎回。仅当主池全部到齐的日期才作为区间基准。
+    采集要求主池20只报价日期为当天且价格/份额有效，校验失败不改旧文件。
+    历史指数仅以同一天主池齐全的日期作基准，之后缺数按前值顺延，并标注覆盖率。
+    CSV与指数JSON分别临时写入再替换，不是两个文件的联合事务。
 
     名单口径：2025 年报「前十大持有人」最后一次实名披露，2026 年起停止披露，无法再更新。
     日度份额变化一律视为汇金操作只是近似假设，实际也可能来自其他机构或个人投资者。
 """
 import csv
 import json
+import math
 import os
 import sys
 import urllib.request
@@ -70,7 +71,7 @@ FIELDS = ["date", "family", "code", "name", "price", "shares", "aum", "chg_share
 
 
 def fetch(code, mkt):
-    """兜底通道：东财 push2 的 f84（总份额）。该主机常返回 000，仅作备用。"""
+    """历史东财 f84 工具；采集流程禁止调用，字段口径不可靠。"""
     secid = ("%d.%s" % (mkt, code))
     url = ("https://push2.eastmoney.com/api/qt/stock/get?secid=%s"
            "&fields=f43,f58,f84&ut=fa5fd1943c7b386f172d6893dbfba10b" % secid)
@@ -87,21 +88,33 @@ def fetch(code, mkt):
 
 
 def from_mx(path):
-    """首选通道：连接器快照 data/_mx_*.json 里的 total_shares。"""
+    """唯一采集通道：连接器快照中的 total_shares；源日期须为当天。"""
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
+    today = date.today().isoformat()
+    if d.get("date") != today:
+        raise ValueError("连接器快照日期不是今天")
     quotes = d.get("quotes") or {}
     out = {}
     for code, mkt, label, fam, tier in POOL:
         q = quotes.get(code)
         if not q or not q.get("total_shares"):
             continue
+        if q.get("time") != today:
+            raise ValueError("%s 报价日期缺失或过期" % code)
+        shares = float(q["total_shares"])
+        price = float(q.get("price") or 0)
+        if not math.isfinite(shares) or shares <= 0 or not math.isfinite(price) or price <= 0:
+            raise ValueError("%s 份额或价格无效" % code)
         out[code] = {
             "code": code,
             "name": q.get("name") or label,
-            "price": float(q.get("price") or 0),
-            "shares": float(q["total_shares"]),
+            "price": price,
+            "shares": shares,
         }
+    missing = sorted(set(CORE) - set(out))
+    if missing:
+        raise ValueError("连接器快照缺少 K01 主池数据：" + ", ".join(missing))
     return out
 
 
@@ -114,11 +127,13 @@ def load():
 
 def save(rows):
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-    with open(CSV_PATH, "w", encoding="utf-8-sig", newline="") as f:
+    temp = CSV_PATH + ".tmp"
+    with open(temp, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, "") for k in FIELDS})
+    os.replace(temp, CSV_PATH)
 
 
 def last_rec(rows, code):
@@ -137,15 +152,18 @@ def build_index(rows):
     for d in dates:
         sub = {r["code"]: float(r["shares"]) for r in rows
                if r["date"] == d and r["code"] in CORE}
-        for c in CORE:
-            if c in sub:
-                last[c] = sub[c]
-        if len(last) == len(CORE):          # 主池齐了才算一个有效观测点
-            series.append((d, sum(last.values())))
+        if len(last) < len(CORE):
+            if len(sub) != len(CORE):
+                continue
+            last = sub
+        else:
+            last.update(sub)
+        series.append((d, sum(last.values())))
     if not series:
         return None
     base_d, base_tot = series[0]
     d, tot = series[-1]
+    observed = len({r["code"] for r in rows if r["date"] == d and r["code"] in CORE})
     prev_tot = series[-2][1] if len(series) > 1 else None
     return {
         "date": d, "pool": len(CORE),
@@ -153,23 +171,25 @@ def build_index(rows):
         "index": round(100.0 * tot / base_tot, 2) if base_tot else 100.0,
         "chg_shares": (tot - prev_tot) if prev_tot is not None else 0,
         "days": len(series),
+        "observed": observed,
+        "carried": len(CORE) - observed,
         "note": ("份额取自连接器 total_shares（非官方披露）；日度变化也可能来自其他机构或个人投资者；"
                  "2026 年起前十大持有人停止披露，名单无法再更新"),
     }
 
 
 def collect(mx_path=None):
+    src = {}
+    if mx_path:
+        src = from_mx(mx_path)
+    else:
+        raise ValueError("必须指定已校验的连接器快照 --mx；不再回退到口径不一致的东财 f84")
     rows = load()
     today = date.today().isoformat()
     rows = [r for r in rows if not (r["date"] == today)]   # 覆盖当天旧记录
 
-    src = {}
     if mx_path:
-        try:
-            src = from_mx(mx_path)
-            print("份额来源：连接器快照 %s（%d/%d 只）\n" % (mx_path, len(src), len(POOL)))
-        except Exception as e:
-            print("读快照失败（%s），改用东财兜底\n" % e)
+        print("份额来源：连接器快照 %s（%d/%d 只）\n" % (mx_path, len(src), len(POOL)))
 
     tot_aum = tot_flow = 0.0
     fam_stat, miss = {}, []
@@ -178,11 +198,6 @@ def collect(mx_path=None):
     print("-" * 92)
     for code, mkt, label, fam, tier in POOL:
         q = src.get(code)
-        if not q:
-            try:
-                q = fetch(code, mkt)
-            except Exception:
-                q = None
         if not q:
             miss.append(code)
             print("%-10s %-22s %-8s  无数据，跳过" % (fam, label, code))
@@ -236,8 +251,10 @@ def collect(mx_path=None):
     idx = build_index(rows)
     if idx:
         os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
-        with open(INDEX_PATH, "w", encoding="utf-8") as f:
+        temp = INDEX_PATH + ".tmp"
+        with open(temp, "w", encoding="utf-8") as f:
             json.dump(idx, f, ensure_ascii=False, indent=1)
+        os.replace(temp, INDEX_PATH)
         print("\n加仓指数 %.2f（基准 %s = 100，主池 %d 只，有效观测 %d 日）"
               % (idx["index"], idx["base_date"], idx["pool"], idx["days"]))
         print("主池总份额 %.1f 亿份%s" % (
@@ -259,24 +276,26 @@ def summary():
         return
     dates = sorted({r["date"] for r in rows})
     last, series = {}, []
+    base = None
     for d in dates:
         sub = {r["code"]: float(r["shares"]) for r in rows
                if r["date"] == d and r["code"] in CORE}
-        for c in CORE:
-            if c in sub:
-                last[c] = sub[c]
+        if base is None:
+            if len(sub) != len(CORE):
+                series.append((d, sum(sub.values()), len(sub)))
+                continue
+            last = sub
+            base = sum(last.values())
+            base_date = d
+        else:
+            last.update(sub)
         series.append((d, sum(last.values()), len(last)))
-    base = None
-    for d, tot, n in series:
-        if n == len(CORE):
-            base = tot
-            break
     print("%-12s %10s %14s %10s" % ("日期", "覆盖", "主池份额(亿份)", "加仓指数"))
     print("-" * 50)
     for d, tot, n in series[-10:]:
         print("%-12s %4d/%-4d %14.1f %10s" % (
             d, n, len(CORE), tot / 1e8,
-            "%.2f" % (100.0 * tot / base) if base else "—"))
+            "%.2f" % (100.0 * tot / base) if base and d >= base_date else "—"))
 
 
 if __name__ == "__main__":

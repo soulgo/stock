@@ -1,7 +1,8 @@
-# ETF 持仓做T 报告系统
+# 投资指标知识库与 ETF 报告系统
 
 每个交易日产出三份手机端 HTML 报告：**早盘 08:30**、**午盘 12:30**、**晚报 21:00**。
 系统只给数据与事实，不做买卖决策；决策由人按 `strategy_rules.md` 完成。
+认可的资料按 `knowledge/INDEX.md` 的来源、状态、版本和复核约定纳入知识库；展示指标不等于采纳为交易规则。
 
 > 本文件是**项目导航**。KDAS 体系手册（原 readme 的内容，43KB）已移至 `docs/KDAS手册.md`。
 
@@ -10,7 +11,7 @@
 ## 一、五分钟跑通
 
 前提：**腾讯自选股连接器是 agent 工具，Python 脚本调不到**。取数必须由 agent 先做，
-脚本只处理已落地的 JSON。缺了第 0 步，整份报告会静默退回东财（数据滞后十几分钟）。
+脚本只处理已落地的 JSON。缺了第 0 步，行情可能走其他来源，K01 采集则会拒绝运行。
 
 ```bash
 D=2026-11-18
@@ -52,7 +53,9 @@ python evening_gen.py --data reports/_evening_$D.txt --decision reports/_decisio
 | `docs/` | 只读资料：KDAS 手册、外部研究存档、ADR | 只读为主 |
 | `knowledge/` | 指标口径（K00~K05），入口 `knowledge/INDEX.md` | 人工维护 |
 
-三份**人工台账**留在根目录：`portfolio.json`（持仓）、`trades.md`（成交）、`signals.md`（指标读数）。
+根目录的 `portfolio.json` 和 `trades.md` 由人工维护；`signals.md` 是脚本维护的指标读数台账。
+
+快照写入时间不等于源数据时间：当前连接器源字段只有日期，无法验证分钟级新鲜。缺失资金流不按零处理；K01 要求当天主池数据完整。早午报动作经过基础门禁，完整交易规则仍需人工审核。离线检查：`python -m unittest discover -s tests -v`；云端连接器与定时运行由用户自行验证。
 
 ---
 
