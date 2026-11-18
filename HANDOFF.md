@@ -17,7 +17,7 @@
 | 位置 | ID | 角色 |
 |---|---|---|
 | 云端 | `cloud:15878801`（早 08:30）/ `cloud:15878805`（午 12:30） | **生产** |
-| 本地 | `732b5775`（早 08:30）/ `d5309087`（午 12:30） | **迭代测试** |
+| 本地 | `732b5775`（早 08:30）/ `d5309087`（午 12:30）/ `e633e39b`（晚 21:00，仅本地，云端未建） | **迭代测试** |
 
 **规则**：本地验证通过后才同步到云端；**对云端只读不改**。两边的 prompt 各存一份，改流程要同步两处（这是目前最大的维护负担，见文末）。
 
@@ -43,17 +43,21 @@ python mx_snapshot.py \
   --flows "data/_raw_flow_hold_$D.json,data/_raw_flow_pool1_$D.json,data/_raw_flow_pool2_$D.json" \
   --market "data/_raw_market_$D.json" --etf "data/_raw_etf_$D.json"
 
-# 2) 仅午盘：份额快照（早盘 8:30 的 total_shares 还是昨收值，**绝不能跑**）
+# 2) 份额快照：午盘与晚报都要跑，早盘**绝不能跑**（8:30 的 total_shares 还是昨收值）
 #    必须带 --mx，否则会静默回落东财 f84（已断供，会拿到错值）
+#    **晚报必须放在 brief.py 之前**：宽基表的「份额变化」列读的就是这一步写进 data/etf_flow.csv 的当日记录
 python etf_flow.py --mx "data/_mx_$D.json"
 
 # 3) 面板（唯一数据源，后面所有数字都出自这里）
 python brief.py morning > reports/_morning_$D.txt
 python brief.py noon    > reports/_noon_$D.txt      # 午盘会顺手写 signals.md
+python brief.py evening > reports/_evening_$D.txt   # 21:00 复盘：A股/港股/全球 + 宽基ETF + 国家队 + 两融 + 要闻
 
 # 4) 渲染（需要人工/agent 先写决策 JSON）
 python report_gen.py --mode morning \
   --data "reports/_morning_$D.txt" --decision "reports/_decision_morning_$D.json"
+python evening_gen.py --data "reports/_evening_$D.txt" \
+  --decision "reports/_decision_evening_$D.json"     # → reports/晚报_$D.html
 ```
 
 跑完自检四件事：① 首行含「连接器快照」；② 文末「报价取数：连接器 X/7」；③ 指标段不为「无数据」；④ 出现「快照已过期」就重取。
@@ -64,8 +68,9 @@ python report_gen.py --mode morning \
 
 | 文件 | 干什么 | 别拿它做什么 |
 |---|---|---|
-| `brief.py` | 取数 + 面板输出（唯一数据源） | 别在别处重算指标 |
-| `report_gen.py` | 面板文本 + 决策 JSON → HTML | 别手写 HTML |
+| `brief.py` | 取数 + 面板输出（唯一数据源），`morning` / `noon` / `evening` 三模式 | 别在别处重算指标 |
+| `report_gen.py` | 早/午盘：面板文本 + 决策 JSON → HTML | 别手写 HTML |
+| `evening_gen.py` | 晚报：面板文本 + 决策 JSON → HTML（复用 report_gen 的 CSS 与解析器） | 别手写 HTML；别在这里重算数字 |
 | `strategy_rules.md` | 做T 规则（四象限、六状态闸门、输出格式） | 不是知识库 |
 | `readme.md` | KDAS 体系手册（微观、分时、资金验证） | 不参与自动决策 |
 | `knowledge/K0x.md` | 单条指标的口径 / 结论 / 失效条件 | 不写代码 |
@@ -103,7 +108,10 @@ python report_gen.py --mode morning \
 | 12 | 日线全部取数失败 | 东财 `push2his` 返回 000；腾讯 `ifzq.gtimg.cn` 高频后返回 501 + JS 跳转页 | `daily_tx()` 已改 `web.ifzq.gtimg.cn` 优先 + 双域名轮换 + 每域名重试 2 次 |
 | 13 | 中证官网取数偶尔滞后一天 / 月份边界重复值 | API 有坏窗口，同一窗口重复请求会返回错位数据 | 多次取数留候选 → 用 `k = 全收益÷价格 = 1.5060±0.3%` 配对筛掉错位 → 锚点日以人工公布值为准。**单次取数不可信** |
 | 14 | 两融 / 快讯取数 000 | 走了 `_get()` 的东财镜像轮换（datacenter-web 被换成 push2 必失败） | 两融用独立的 `dcget()`，快讯用 `plain_get()`，都不参与行情降级计数器 |
-| 15 | QDII 溢价没被拦 | 溢价率数据源未接通 | 跨境品种（513500/513650）做T 前**人工看 `data_etf` 的 `etfDisc`**（折溢价率 %）。11-16 实测 513500 = 10.43%、513650 = 8.58%，都在一年均值上方 4pp |
+| 15 | 南向资金显示 ±420 亿、正好等于每日额度 | 东财 `kamt` 接口同时承载「额度余额」，单位万元；额度用尽或数据未更新时返回的就是 420 亿 | `southbound()` 已加校验：绝对值 ≥ 阈值 99% 判为无效，输出「无数据」。**不要为了让表格好看去掉这个判断** |
+| 16 | 晚报宽基表「份额变化」整列是「—」 | 顺序反了：`brief.py evening` 读的是 `data/etf_flow.csv` 当日行，`etf_flow.py` 必须在它之前跑 | 固定顺序 `mx_snapshot → etf_flow --mx → brief.py evening` |
+| 17 | 晚报宽基表整段「无数据（载具报价全部缺失）」 | 把 `sh510300` 这类**带前缀码**喂给了 `quote()`：缓存键和东财 secid 都要裸码，会一路错到腾讯拼成 `shsh510300` | 统一走 `ev_bare()` 剥前缀再取数；带前缀码只用于查 `quotes_full` |
+| 18 | QDII 溢价没被拦 | 溢价率数据源未接通 | 跨境品种（513500/513650）做T 前**人工看 `data_etf` 的 `etfDisc`**（折溢价率 %）。11-16 实测 513500 = 10.43%、513650 = 8.58%，都在一年均值上方 4pp |
 
 ---
 
@@ -114,6 +122,9 @@ python report_gen.py --mode morning \
 1. **早盘回归**：用昨天的 `_morning_<date>.txt` + 决策 JSON 重新渲染，与改动前的 HTML 对比。**纯解析改动应该 0 字节差异**。
 2. **等价性验证**：新旧解析逻辑在同一份真实数据上比 `parse_morning`/`parse_noon` 的完整 JSON，全字段相等才算等价。
 3. **实跑一次** `brief.py morning` 与 `noon`，确认段数与序号正确（早盘 9 段、午盘 11 段），且指标段没变「无数据」。
+4. **晚报单独验**：`brief.py evening` 应出 9 段（一 A股 / 二 港股 / 三 全球 / 四 宽基 / 五 大盘资金 / 六 两融 / 七 K05 / 八 K04 / 九 要闻）；
+   `evening_gen.py` 回执应为「A股 4 条指数 / 港股 3 条 / 全球 5 组 / 宽基 11 行族别 + 7 只持仓 / 资金面四项有 / 要闻 N 条」。
+   宽基 0 行族别 = 解析正则与 `broad_block` 的列格式脱节，两张表要一起改。
 
 **看版式**（本机没有 playwright）：
 

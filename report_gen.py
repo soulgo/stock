@@ -414,9 +414,10 @@ def sec_title(text, title, next_title=None):
 
 # ------------------------------------------------------------------ 解析
 def parse_common(text):
-    m = re.search(r"【KDAS\s*(早盘|午盘)面板】(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})", text)
+    m = re.search(r"【KDAS\s*(早盘|午盘|晚报)面板】(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})", text)
     return {"date": m.group(2) if m else datetime.now().strftime("%Y-%m-%d"),
             "time": m.group(3) if m else "",
+            "phase": m.group(1) if m else "",
             "holiday": ("休市" in text[:200])}
 
 
@@ -1023,9 +1024,10 @@ def parse_market(text):
     natsum = re.search(r"([+-]?[\d,.]+[亿万])（(\d+) 只，(\d+) 只净流入）", rows.get("载具今日", ""))
 
     # 同时点成交额倍数：0.80×（今日 547.0亿 / 基准 680.3亿，历史同时点已走完 94.4%）→ 量能持平
+    # 晚报口径为「全天已走完 100%」，两种说法都要认，否则晚报这张卡会整块消失
     cut = None
     mt = re.search(r"([\d.]+)×（今日 ([\d,.]+)亿 / 基准 ([\d,.]+)亿，"
-                   r"历史同时点已走完 ([\d.]+)%）→ (.+?)\s*$", rows.get("载具同时点", ""))
+                   r"(?:历史同时点|全天)已走完 ([\d.]+)%）→ (.+?)\s*$", rows.get("载具同时点", ""))
     if mt:
         cut = {"x": float(mt.group(1)),
                "today": float(mt.group(2).replace(",", "")) * 1e8,
@@ -1203,7 +1205,9 @@ def _yi(v, d=2):
     return f"{v/1e8:+.{d}f}亿" if abs(v) >= 1e8 else f"{v/1e4:+.0f}万"
 
 
-def render_market(mk):
+def render_market(mk, full=False):
+    """full=True（晚报）时「同时点倍数」实为「当日成交额 ÷ 20 日均额」，标签要跟着改，
+    否则 100% 进度下还写「历史同时点已走完」会让人误以为是盘中读数。"""
     if not mk:
         return ""
     fl = {"main": mk["main"] or 0, "huge": mk["huge"] or 0, "big": mk["big"] or 0,
@@ -1228,10 +1232,14 @@ def render_market(mk):
     cut = mk.get("cut")
     if cut:
         ct = "down" if cut["x"] < 0.85 else ("up" if cut["x"] >= 1.2 else "")
+        if full:
+            lab, sub = "载具全天成交量", "当日成交额 ÷ 20 日均额"
+        else:
+            lab, sub = "载具同时点成交量", f"历史同时点已走完 {cut['prog']:.1f}%"
         cut_html = (f'<div class="cut"><span class="cx {ct}">{cut["x"]:.2f}×</span>'
-                    f'<span class="ct">载具同时点成交量'
+                    f'<span class="ct">{lab}'
                     f'<br>今日 {cut["today"]/1e8:,.1f}亿 / 基准 {cut["bench"]/1e8:,.1f}亿'
-                    f'（历史同时点已走完 {cut["prog"]:.1f}%）'
+                    f'（{sub}）'
                     f'<br><b>{E(cut["tip"])}</b></span></div>')
 
     def _short(v):
@@ -1463,6 +1471,17 @@ PLAIN = {
     "news": ("快讯 = 刚刚发生了什么，先看要点就够了",
              "要点是帮你抓重点，原始条目折叠在下面，想核随时点开。"
              "真正决定动不动手的是上面的价格、资金、两融和状态，消息只当情绪参考。"),
+    "broad": ("宽基 ETF 全景 = 国家队那 20 只载具今天整体怎么走",
+              "涨跌幅按<b>成交额加权</b>（钱多的那只话语权大），不是简单平均。"
+              "<b>成交额</b>放大说明有人在动；<b>主力净额</b>是场内买卖方向，"
+              "<b>份额变化</b>才是申赎——两者背离时以份额为准，因为场内可以倒手，份额只能真金白银申购。"),
+    "hk": ("港股 = A 股收盘后还在走的那半天",
+           "港股 16:00 收盘，比 A 股晚 1 小时，所以它对隔夜美股的下跌往往<b>滞后一天</b>反应。"
+           "南向资金是内地经港股通买港股的净额，正数=内资在买。"),
+    "global": ("全球市场 = 我们睡觉时别人在干什么",
+               "美股在 A 股 21:00 时<b>还没开盘</b>，这里报的是昨夜收盘；"
+               "期货是当前报价，只用来判断今晚开盘的方向，不看点位。"
+               "亚太、欧洲是同一天已经收完的，用来判断风险偏好是「一起跌」还是「各走各的」。"),
 }
 
 

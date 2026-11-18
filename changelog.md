@@ -11,6 +11,28 @@
 
 ## 2026-11-18
 
+### 交付 · 新增 21:00 晚报（当日复盘，不做T）
+
+- **改了什么**
+  - `brief.py`：新增 `brief.py evening` 模式与 `evening(cfg)`；新增四个前段函数
+    `ashare_block`（A股四大指数收盘 + 两市成交额，指数口径）、`hk_block`（恒指/恒生科技/国企指数 + 南向资金）、
+    `global_block`（亚太收盘 / 欧洲收盘 / 美股昨夜 / 期货当前 / 汇率商品）、
+    `broad_block`（国家队载具按指数族聚合，成交额加权涨跌幅 + 主力净额 + 份额变化，附持仓当日含 KDAS 六状态）。
+  - `brief.py`：`BLOCKS` 的 market / margin / impulse / ratio 增加 `evening` 模式（news 不列，由 `evening()` 放到文末）；
+    `market_block` 的成交量倍数在 evening 下按全天（进度 100%）计算并改用「全天已走完」措辞；
+    `news_block` evening 窗口 12 小时；`main()` 增加 `evening` 分支。
+  - 新建 `evening_gen.py`：晚报专用渲染器（复用 `report_gen` 的 CSS、解析器与 `render_market/render_margin/render_impulse/render_ratio/render_news`），
+    新增 `.tb` 族别表 / `.gp` 全球分组卡 / `.wt` 明日关注卡三类样式。
+  - `report_gen.py`：`parse_common` 认「晚报」；`render_market(mk, full=False)` 支持全天口径标签；
+    `parse_market` 的「载具同时点」正则兼容「历史同时点已走完 / 全天已走完」；
+    `PLAIN` 增加 `broad` / `hk` / `global` 三条大白话。
+  - 新增定时任务「持仓复盘·晚报 21:00」（工作日 21:00，已绑定 westock-mcp）。
+- **为什么**：用户需要收盘后的一份复盘——当天 A 股/港股、国家队与大单方向、融资额变化、全球股市、宽基 ETF 走势与重要新闻；
+  做T动作留给次日 08:30，晚报只做「今天发生了什么」，避免与早午盘的计划职责重叠。
+- **验证**：以 11-18 快照实跑 `brief.py evening` 得 9 段（A股/港股/全球/宽基/大盘资金/两融/K05/K04/要闻），
+  `evening_gen.py` 回执「A股 4 条指数 / 港股 3 条 / 全球 5 组 / 宽基 11 行族别 + 7 只持仓 / 资金面四项有 / 要闻 12 条」；
+  午盘 `report_gen.py --mode noon` 在 11-17 真实数据上回归，解析字段与改动前一致。
+
 ### 架构 · 段落 key 化：序号不再当主键
 
 - **改了什么**

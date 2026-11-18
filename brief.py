@@ -10,6 +10,7 @@ brief.py — 持仓做T数据面板（免密钥）
 
   python brief.py morning    # 08:30 用：隔夜美股 + 亚洲早盘 + 今日关键位
   python brief.py noon       # 12:30 用：A股上午 + 资金流 + 日内位置 + 关键位
+  python brief.py evening    # 21:00 用：A股/港股/全球收盘 + 宽基ETF + 国家队与大单 + 两融 + 要闻
   python brief.py morning --src em     # 强制走东财（腾讯异常时用）
   python brief.py morning --selftest 512170   # 打印腾讯原始字段，核对字段位
   python brief.py --signals backfill   # 回填 signals.md 的 fwd20（离线，用表内未来点位）
@@ -651,12 +652,15 @@ def market_block(no, cfg=None, mode="noon"):
         amt = mk.get("amount") or 0
         tail = f"，20日均量 {r:.0f}%" if r else ""
         print(f"  成交额          {amt:,.0f}亿（{mk.get('date') or '—'} 收盘{tail}）")
-        print(f"  概览统计日      {mk.get('date') or '—'}（收盘口径，非当日盘中）")
+        note = ("（收盘口径；日期若为昨日说明概览未更新，以「A股收盘」的指数成交额为准）"
+                if mode == "evening" else "（收盘口径，非当日盘中）")
+        print(f"  概览统计日      {mk.get('date') or '—'}{note}")
 
     # 同时点成交量倍数：国家队进场的必要不充分信号（真进场必经放量）。
-    # 只在午盘算 —— 早盘 8:30 当日还没成交，此时段看的是隔夜外盘，倍数没有意义。
-    prog = intraday_progress()
-    if mode == "noon" and prog > 0.02 and qs:
+    # 午盘按日内进度折算；晚报是收盘复盘，「全天」就按 100% 算 —— 不读时钟，
+    # 否则 15:30 之后重跑、或补跑历史日期时会算出「已走完 100% 却只统计了半日」的假倍数。
+    prog = 1.0 if mode == "evening" else intraday_progress()
+    if mode in ("noon", "evening") and prog > 0.02 and qs:
         base = pool_baseline(NATIONAL_ALL)
         today = a20 = 0.0
         nq = 0
@@ -673,8 +677,9 @@ def market_block(no, cfg=None, mode="noon"):
             tip = ("未见进场迹象" if x < 0.85 else
                    "量能持平" if x < 1.2 else
                    "明显放量" if x < 1.8 else "异常放量，重点看资金方向")
+            span = "全天已走完" if mode == "evening" else "历史同时点已走完"
             print(f"  载具同时点      {x:.2f}×（今日 {today/1e8:,.1f}亿 / 基准 {bench/1e8:,.1f}亿，"
-                  f"历史同时点已走完 {prog*100:.1f}%）→ {tip}")
+                  f"{span} {prog*100:.1f}%）→ {tip}")
         else:
             print(f"  载具同时点      无数据（{nq} 只有效）")
 
@@ -1051,8 +1056,9 @@ def news_feed(hours=6, max_pages=3):
 
 
 def news_block(no, cfg=None, mode="noon"):
-    print(f"\n{no}、实时快讯（近期发生的事，便于即时判断）")
-    hours = 14 if mode == "morning" else 6
+    sub = "今日要闻，便于复盘" if mode == "evening" else "近期发生的事，便于即时判断"
+    print(f"\n{no}、实时快讯（{sub}）")
+    hours = 14 if mode == "morning" else 12 if mode == "evening" else 6
     items = news_feed(hours=hours)
     if not items:
         print("  无数据（东财 / 新浪 7x24 均不可用，或窗口内无更新）")
@@ -1385,16 +1391,266 @@ def impulse_block(no, cfg=None, mode="morning"):
         print(f"  取数失败：{e}（本指标不可用，按无信号处理）")
 
 
+# ---------------------------------------------------------------- 晚报（21:00 复盘）
+# 与早/午盘的分工：晚报只回答「今天发生了什么」，不出做T动作、不给触发价。
+# 关注顺序按用户口径：A股/港股收盘 → 全球市场 → 宽基ETF → 国家队与大单 → 两融 → 要闻。
+# 行格式仍统一为「两空格 + 标签 + 两个以上空格 + 数值」，供 evening_gen.py 按标签解析。
+EV_ASHARE = [("1.000001", "上证指数"), ("0.399001", "深证成指"),
+             ("0.399006", "创业板指"), ("1.000688", "科创50")]
+EV_ASIA = [("100.N225", "日经225"), ("100.KS11", "韩国KOSPI"), ("100.STI", "新加坡海峡")]
+EV_EUROPE = [("100.FTSE", "英国富时"), ("100.GDAXI", "德国DAX"), ("100.FCHI", "法国CAC")]
+EV_US = [("100.DJIA", "道琼斯"), ("100.NDX", "纳斯达克"), ("100.SPX", "标普500")]
+EV_FUT = [("hf_CHA50CFD", "A50期货"), ("hf_ES", "标普期货"), ("hf_NQ", "纳指期货")]
+EV_MACRO = [("100.UDI", "美元指数"), ("101.GC00Y", "COMEX黄金")]
+
+
+def ev_row(name, px, p, tail="", ind=2):
+    print((" " * ind) + f"{name:<10} {px:>11,.2f}  {pct(p):>8}   {tail}".rstrip())
+
+
+def ev_index(sid, name, tail_amt=False, ind=2):
+    """晚报指数行：取数失败只打一行提示，不抛错拖垮整段"""
+    try:
+        q = index_quote(sid, name)
+    except Exception:
+        q = {"ok": False}
+    if not q.get("ok"):
+        print((" " * ind) + f"{name:<10} 取数失败")
+        return None
+    tail = f"成交额 {q['amount']/1e8:,.0f} 亿" if (tail_amt and q.get("amount")) else ""
+    ev_row(q.get("name") or name, q["price"], q.get("pct"), tail, ind)
+    return q
+
+
+def southbound():
+    """南向资金（港股通）当日净买入，元。东财 kamt 接口，不可信就返回 None。
+
+    口径陷阱：该接口同时承载「额度余额」，单位万元。当净买入绝对值贴近每日额度
+    （沪/深各 420 亿 = 4200000 万）时，返回的其实是额度而非净买入，必须判为无效 ——
+    实测盘中曾返回恒等于阈值的 4200000。宁可写「无数据」也不给错数。
+    """
+    try:
+        d = jget("https://push2.eastmoney.com/api/qt/kamt/get"
+                 "?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56")
+    except Exception:
+        return None
+    dd = d.get("data") or {}
+    out = {}
+    for k, nm in (("sh2hk", "沪港通"), ("sz2hk", "深港通")):
+        x = dd.get(k) or {}
+        v, th = x.get("dayNetAmtIn"), x.get("dayAmtThreshold")
+        if not isinstance(v, (int, float)) or not th:
+            return None
+        if abs(v) >= th * 0.99:        # 触到额度上限 → 返回的是额度，不是净买入
+            return None
+        out[nm] = v * 1e4
+    out["total"] = sum(out.values())
+    out["date"] = (dd.get("sh2hk") or {}).get("date2") or ""
+    return out
+
+
+def ashare_block(no):
+    """A股收盘：四大指数 + 两市成交额。指数口径收盘即准，比市场概览可靠。"""
+    print(f"\n{no}、A股收盘（全天）")
+    amts = []
+    for sid, nm in EV_ASHARE:
+        q = ev_index(sid, nm, tail_amt=True)
+        if q and sid in ("1.000001", "0.399001") and q.get("amount"):
+            amts.append(q["amount"])
+    if len(amts) == 2:
+        print(f"  两市成交额      {sum(amts)/1e8:,.0f} 亿"
+              f"（沪 {amts[0]/1e8:,.0f} + 深 {amts[1]/1e8:,.0f}，指数口径）")
+    else:
+        print("  两市成交额      无数据（指数成交额缺失）")
+    print("  成交额口径      创业板/科创50 是成分指数，成交额已含在深市/沪市内，不重复累加")
+
+
+def hk_block(no):
+    """港股收盘：三大指数 + 南向资金"""
+    print(f"\n{no}、港股收盘")
+    for sid, nm in [("100.HSI", "恒生指数"), ("124.HSTECH", "恒生科技"),
+                    ("100.HSCEI", "国企指数")]:
+        ev_index(sid, nm, tail_amt=(sid == "100.HSI"))
+    sb = southbound()
+    if sb:
+        print(f"  南向资金        {wan(sb['total'])}（沪港通 {wan(sb['sh2hk'])} / "
+              f"深港通 {wan(sb['sz2hk'])}，{sb.get('date') or '—'}）")
+        print("  南向口径        港股通净买入，正=内地资金净流入港股；已剔除「额度当净买入」的错值")
+    else:
+        print("  南向资金        无数据（东财接口不可用，或返回值疑似额度而非净买入）")
+    print("  港股口径        16:00 收盘；港股与 A 股不同步，对隔夜美股的反映常滞后一天")
+
+
+def global_block(no):
+    """全球市场：亚太收盘 / 欧洲收盘 / 美股昨夜 / 期货当前 / 汇率商品"""
+    print(f"\n{no}、全球市场")
+    print("  亚太收盘")
+    for sid, nm in EV_ASIA:
+        ev_index(sid, nm, ind=4)
+    print("  欧洲收盘")
+    for sid, nm in EV_EUROPE:
+        ev_index(sid, nm, ind=4)
+    print("  美股昨夜")
+    for sid, nm in EV_US:
+        ev_index(sid, nm, ind=4)
+    print("  期货当前")
+    try:
+        s = sina([c for c, _ in EV_FUT])
+    except Exception:
+        s = {}
+    for code, nm in EV_FUT:
+        v = s.get(code.split("_", 1)[-1])
+        if not v or len(v) < 9 or not v[0]:
+            print(f"    {nm:<10} 取数失败")
+            continue
+        try:
+            cur, prev = float(v[0]), float(v[7])
+            ev_row(nm, cur, (cur / prev - 1) * 100 if prev else None, ind=4)
+        except Exception:
+            print(f"    {nm:<10} 取数失败")
+    print("  汇率商品")
+    for sid, nm in EV_MACRO:
+        ev_index(sid, nm, ind=4)
+    print("  时点说明        亚太/欧洲为当日收盘，美股为昨夜收盘（21:00 美股未开盘），"
+          "期货为当前报价；看方向不看点位")
+
+
+def ev_shares(codes):
+    """从 data/etf_flow.csv 取「今天」的份额变化。没有今天的记录返回 {}，不猜不补 0。"""
+    path = os.path.join(BASE, "data", "etf_flow.csv")
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = {}
+    try:
+        import csv as _csv
+        with open(path, encoding="utf-8-sig") as f:
+            for r in _csv.DictReader(f):
+                c = (r.get("code") or "").strip()
+                if r.get("date") != today or not c:
+                    continue
+                out[c] = {"chg": float(r.get("chg_shares") or 0),
+                          "flow": float(r.get("net_flow") or 0) * 1e8}
+    except Exception:
+        return {}
+    return out
+
+
+def ev_sht(v):
+    """份额变化：小于 50 万份的波动显示为 0.00，避免出现「-0.00亿份」这种看着像错的数"""
+    s = f"{v/1e8:+.2f}亿份"
+    return "0.00亿份" if s in ("+0.00亿份", "-0.00亿份") else s
+
+
+def ev_bare(c):
+    """sh510300 → 510300。quote()/fflow() 的缓存键都是裸码，传带前缀的码会一路漏到腾讯拼错"""
+    return c[2:] if c[:2].lower() in ("sh", "sz", "bj") else c
+
+
+def broad_block(no, cfg):
+    """宽基 ETF 全景：按指数族聚合 + 持仓当日表现（含 KDAS 六状态）。
+    族涨跌幅按成交额加权 —— 同族 4 只 ETF 涨跌幅有差异，等权会把小品种放大。"""
+    print(f"\n{no}、宽基ETF全景（国家队载具 + 持仓）")
+    qs, fls = {}, {}
+    for c, _f in NATIONAL + NATIONAL_EXT:
+        b = ev_bare(c)
+        try:
+            qs[c] = quote(b)
+        except Exception:
+            qs[c] = None
+        try:
+            fls[c] = fflow(b)
+        except Exception:
+            fls[c] = None
+    sh = ev_shares([ev_bare(c) for c, _ in NATIONAL + NATIONAL_EXT])
+
+    print("  族别           涨跌     成交额      主力净额     份额变化")
+    agg = {}
+    for c, fam in NATIONAL:
+        q, fl = qs.get(c), fls.get(c)
+        if not q:
+            continue
+        a = agg.setdefault(fam, {"amt": 0.0, "w": 0.0, "main": 0.0, "sh": 0.0,
+                                 "sh_n": 0, "fl_n": 0})
+        amt = q.get("amount") or 0
+        a["amt"] += amt
+        if q.get("pct") is not None:
+            a["w"] += q["pct"] * (amt or 1)
+        if fl:
+            a["main"] += fl.get("main") or 0
+            a["fl_n"] += 1
+        s = sh.get(ev_bare(c))
+        if s:
+            a["sh"] += s["chg"]
+            a["sh_n"] += 1
+    if not agg:
+        print("  无数据（载具报价全部缺失）")
+        return
+
+    tot = {"amt": 0.0, "w": 0.0, "main": 0.0, "sh": 0.0, "sh_n": 0, "fl_n": 0}
+    for fam in FAM_ORDER:
+        a = agg.get(fam)
+        if not a:
+            continue
+        p = a["w"] / a["amt"] if a["amt"] else None
+        sht = ev_sht(a["sh"]) if a["sh_n"] else "—"
+        mns = wan(a["main"]) if a["fl_n"] else "—"
+        print(f"  {fam:<10} {pct(p):>8}  {a['amt']/1e8:>7,.1f}亿  "
+              f"{mns:>10}  {sht:>11}")
+        for k in ("amt", "w", "main", "sh"):
+            tot[k] += a[k]
+        tot["sh_n"] += a["sh_n"]
+        tot["fl_n"] += a["fl_n"]
+    p = tot["w"] / tot["amt"] if tot["amt"] else None
+    tsht = ev_sht(tot["sh"]) if tot["sh_n"] else "—"
+    tmns = wan(tot["main"]) if tot["fl_n"] else "—"
+    print(f"  {'合计':<10} {pct(p):>8}  {tot['amt']/1e8:>7,.1f}亿  "
+          f"{tmns:>10}  {tsht:>11}")
+    if not tot["fl_n"]:
+        print("  主力口径        资金流取数失败，主力净额整列留空（不估算、不补 0）")
+    if sh:
+        print(f"  份额口径        份额取自连接器 total_shares，日内变化也可能来自其他机构；"
+              f"载具 {len(sh)} 只有今日记录")
+    else:
+        print("  份额口径        今日无份额记录（未跑 etf_flow.py --mx），份额列按「—」处理，不外推")
+
+    print("\n  持仓当日")
+    print("  名称            现价      涨跌     成交额     主力净额    状态")
+    for h in cfg["holdings"]:
+        try:
+            q = quote(h["code"])
+        except Exception:
+            q = None
+        if not q:
+            print(f"  {h['name']:<12} 取数失败")
+            continue
+        try:
+            fl = fflow(h["code"])
+        except Exception:
+            fl = None
+        st = "—"
+        try:
+            lv = levels(h["code"], q["price"] or q["prev"])
+            if lv:
+                st = lv["state"]
+        except Exception:
+            pass
+        main_s = wan(fl["main"]) if fl else "—"
+        print(f"  {h['name']:<12}{q['price']:>7.3f} {pct(q.get('pct')):>8} "
+              f"{(q.get('amount') or 0)/1e8:>7.2f}亿 {main_s:>9}  {st}")
+    print("  状态口径        只有「震荡区间」可做T（strategy_rules §4.0）；"
+          "晚报不据此出动作，只标注明日能不能动手")
+
+
 # ---------------------------------------------------------------- 可插拔指标段
 # 固定前段（行情/持仓/关键位/异动）直接写在 morning/noon 里；只有「指标段」进注册表。
 # 加指标 = 这里加一行，序号自动顺延；report_gen 按标题关键字解析，与顺序无关。
 BLOCKS = [
     # (key, 段标题关键字, 函数, 适用模式)
-    ("market",  "大盘资金与国家队", market_block,  ("morning", "noon")),
-    ("margin",  "融资融券",         margin_block,  ("morning", "noon")),
+    # 晚报（evening）只挂客观指标段；新闻由 evening() 单独放到文末，所以 news 不列 evening。
+    ("market",  "大盘资金与国家队", market_block,  ("morning", "noon", "evening")),
+    ("margin",  "融资融券",         margin_block,  ("morning", "noon", "evening")),
     ("news",    "实时快讯",         news_block,    ("morning", "noon")),
-    ("impulse", "信贷脉冲",         impulse_block, ("morning", "noon")),
-    ("ratio",   "股债比价",         ratio_block,   ("morning", "noon")),
+    ("impulse", "信贷脉冲",         impulse_block, ("morning", "noon", "evening")),
+    ("ratio",   "股债比价",         ratio_block,   ("morning", "noon", "evening")),
     # tstats_block（做T战果）未进注册表：2026-11-16 用户要求报告不显示，函数保留备用
 ]
 
@@ -1773,6 +2029,31 @@ def noon(cfg):
     print_xcheck(cfg)
 
 
+# ---------------------------------------------------------------- 晚报
+def evening(cfg):
+    """21:00 复盘：只看当天发生了什么，不出做T动作、不给触发价。
+
+    段序固定：前四段是客观行情（A股/港股/全球/宽基ETF），指标段由 BLOCKS 自动顺延，
+    要闻固定放文末 —— 复盘是「先看盘面、再看资金、最后看消息」的顺序。
+    """
+    print(f"【KDAS 晚报面板】{datetime.now():%Y-%m-%d %H:%M}  数据：{src_label()}\n")
+    day_check(cfg)
+
+    ashare_block("一")
+    hk_block("二")
+    global_block("三")
+    broad_block("四", cfg)
+
+    n = emit_blocks(cfg, "evening", start=4)      # 五~：大盘资金 / 两融 / 信贷脉冲 / 股债比价
+    try:
+        news_block(cn(n + 1), cfg, "evening")     # 要闻固定最后
+    except Exception as e:
+        print(f"\n{cn(n + 1)}、实时快讯（近期发生的事，便于即时判断）")
+        print(f"  取数失败：{e}（本段不可用，按无消息处理）")
+
+    print_xcheck(cfg)
+
+
 def selftest(code):
     """核对腾讯字段位：打印原始 ~ 分隔内容 + 解析结果，一次命令看清有没有错位"""
     sym = sina_code(code)
@@ -1797,7 +2078,8 @@ def selftest(code):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", nargs="?", default="morning", choices=["morning", "noon"])
+    ap.add_argument("mode", nargs="?", default="morning",
+                    choices=["morning", "noon", "evening"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--src", choices=["auto", "tx", "em"],
                     default=os.environ.get("BRIEF_SRC", "auto"),
@@ -1817,7 +2099,7 @@ def main():
     # 货币ETF只做现金管理，不进做T池（否则会算进市值合计、占一行 KDAS 关键位）
     cfg["holdings"] = [h for h in cfg["holdings"]
                        if h.get("role") != "现金管理" and h.get("code") != "511880"]
-    (morning if a.mode == "morning" else noon)(cfg)
+    (morning if a.mode == "morning" else noon if a.mode == "noon" else evening)(cfg)
 
 
 if __name__ == "__main__":
