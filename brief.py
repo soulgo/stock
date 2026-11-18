@@ -23,6 +23,8 @@ signal(key, value, band, hs300)，读数就自动进 signals.md 台账，供半�
 """
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -33,7 +35,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-from paths import DATA, ROOT, data    # 路径唯一真源（ADR-001），不要自己拼 data/
+from paths import DATA, REPORTS, ROOT, data   # 路径唯一真源（ADR-001）
+import panel                                   # 面板契约（ADR-003）
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 TOKEN = "fa5fd1943c7b386f172d6893dbfba10b"
@@ -2205,7 +2208,41 @@ def main():
     # 货币ETF只做现金管理，不进做T池（否则会算进市值合计、占一行 KDAS 关键位）
     cfg["holdings"] = [h for h in cfg["holdings"]
                        if h.get("role") != "现金管理" and h.get("code") != "511880"]
-    (morning if a.mode == "morning" else noon if a.mode == "noon" else evening)(cfg)
+    fn = morning if a.mode == "morning" else noon if a.mode == "noon" else evening
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            fn(cfg)
+    finally:
+        # 无论成败都把已产出的面板吐到 stdout：定时任务靠它拿回执与面板原文
+        text = buf.getvalue()
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        try:
+            panel_snapshot(a.mode, text)
+        except Exception as e:
+            sys.stderr.write("面板快照写入失败：%s（不影响本次报告）\n" % e)
+    return 0
+
+
+def panel_snapshot(mode, text):
+    """把本次面板读数落成 JSON 快照，供渲染层直接读取（ADR-003）。
+
+    文本仍是主产物——agent 要读它、按其中的数字写决策 JSON；快照只是同一份数据的
+    结构化副本，让 report_gen / evening_gen 不必再猜格式。契约不完整只告警不中断：
+    宁可交一份缺段的报告，也不能让 08:30 的定时任务整个挂掉。
+    """
+    parse = {"morning": panel.parse_morning, "noon": panel.parse_noon,
+             "evening": panel.parse_evening}[mode]
+    d = parse(text)
+    bad = panel.validate(d, mode, strict=False)
+    if bad:
+        sys.stderr.write("面板契约不完整（%s）：%s\n" % (mode, "；".join(bad)))
+    date = d.get("date") or datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(REPORTS, "_panel_%s_%s.json" % (mode, date))
+    panel.dump(d, path, mode, text)
+    sys.stderr.write("面板快照：%s\n" % path)
+    return path
 
 
 if __name__ == "__main__":

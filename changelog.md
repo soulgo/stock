@@ -11,6 +11,22 @@
 
 ## 2026-11-18
 
+### 架构 · 面板契约集中到 panel.py，渲染层改读 JSON 快照（ADR-003）
+
+- **改了什么**
+  - 新增 `panel.py`：`report_gen` 的 16 个 `parse_*` + `num/yuan/short_name/sec_title`、`evening_gen` 的 5 个晚报解析器与 `GROUPS` 全部迁入；另加 `dump/load/validate/text_sha`。
+  - `report_gen.py` 从 1803 行 → 1325 行，解析函数改为从 `panel` re-export（`evening_gen` 的 import 一行未改）。
+  - 新增 `read_panel()`：`--data` 可传 `.json`；传 `.txt` 时若有同名 `_panel_<mode>_<date>.json` **且文本指纹一致**则读快照，否则回落解析文本。来源只写 stderr，stdout 回执格式不变。
+  - `brief.py`：改为「捕获 stdout → 统一输出 → 落快照」；新增 `panel_snapshot()`，把本次面板读数写 `reports/_panel_<mode>_<date>.json`（带文本指纹）。契约不完整只告警到 stderr，不中断报告。
+  - `evening_gen.py`：解析器定义移出，改为 `from panel import ...`；main 改走 `read_panel(…, "evening")`。
+- **为什么**：解析分散在两个渲染器里、且与打印格式硬耦合，格式漂移只会让报告静默少一块。集中后解析只有一份实现，渲染器不再含正则，快照提供结构化入口。**不采用「brief 直接产 dict」**：面板文本同时是 agent 的输入（prompt 要求读它写决策），不可能删；而 `parse_*` 的字段口径是文本形状（price/space/chg 都是字符串），硬转要重写约 400 行，负收益。代价与短板见 ADR-003。
+- **验证**
+  - `tools/panel_check.py`：15 份历史面板上，`panel.parse_*` 与搬迁前 `report_gen` 实现输出 dict 完全一致；契约体检 morning 6 份中 4 份缺 `levels`（均为 11-11/12/13 取数失败日，属实）。
+  - 双路径：同一次运行数据，走快照与走文本各渲染一次，早盘/晚报 HTML **字节级一致**。
+  - 基线回归：11-18 09:07 早盘、11-17 午盘、11-18 晚报重渲染，与重构前 HTML **0 字节差异**。
+  - 指纹：匹配走 json、改一个字符回落 text，两条分支均验证。
+- **新增产物**：`reports/_panel_<mode>_<date>.json`（与 txt 同批产生，已被 `.gitignore` 的 `reports*` 覆盖）。
+
 ### 架构 · 指标段三段式：data → dict → render（ADR-002 第一步）
 
 - **改了什么**（只动 `brief.py`，`report_gen.py` 一行未改）

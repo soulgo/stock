@@ -35,11 +35,16 @@ import re
 import sys
 
 from report_gen import (
-    CSS, E, OUT_DIR, cls, num, plain, read_text, render_impulse, render_indices,
+    CSS, E, OUT_DIR, cls, num, plain, read_panel, read_text, render_impulse, render_indices,
     render_margin, render_market, render_news, render_ratio, render_reads,
     render_risks, rich, sec_title, sign, yuan, parse_common, parse_indices,
     parse_market, parse_margin, parse_impulse, parse_ratio, parse_news,
 )
+
+from panel import (           # 晚报解析器也归 panel（ADR-003）
+    GROUPS, parse_ashare, parse_broad, parse_evening, parse_global, parse_hk,
+)
+
 
 
 # ------------------------------------------------------------------ 晚报补充样式
@@ -90,114 +95,8 @@ STATE_CLASS = {
     "右侧空间": "s4", "右侧空间·窄": "s5", "右侧趋势": "s6",
 }
 
-GROUPS = ("亚太收盘", "欧洲收盘", "美股昨夜", "期货当前", "汇率商品")
-
 
 # ------------------------------------------------------------------ 解析
-def _rows(block):
-    """两空格 + 标签 + 两空格以上 + 正文 → dict（同 report_gen 的口径）"""
-    out = {}
-    for ln in block.splitlines():
-        m = re.match(r"^\s{2}(\S+)\s{2,}(.+?)\s*$", ln)
-        if m:
-            out.setdefault(m.group(1), m.group(2))
-    return out
-
-
-def parse_ashare(block):
-    rows = _rows(block)
-    amt = re.search(r"([\d,]+)\s*亿（沪 ([\d,]+) \+ 深 ([\d,]+)", rows.get("两市成交额", ""))
-    return {
-        "indices": parse_indices(block),
-        "amount": float(amt.group(1).replace(",", "")) if amt else None,
-        "sh": float(amt.group(2).replace(",", "")) if amt else None,
-        "sz": float(amt.group(3).replace(",", "")) if amt else None,
-        "note": rows.get("成交额口径", "").strip(),
-    }
-
-
-def parse_hk(block):
-    rows = _rows(block)
-    sb = re.search(r"([+-]?[\d,.]+[亿万])（沪港通 ([+-]?[\d,.]+[亿万]) / "
-                   r"深港通 ([+-]?[\d,.]+[亿万])，(.*?)）", rows.get("南向资金", ""))
-    south = None
-    if sb:
-        south = {"total": yuan(sb.group(1)), "sh": yuan(sb.group(2)),
-                 "sz": yuan(sb.group(3)), "date": sb.group(4).strip()}
-    return {"indices": parse_indices(block), "south": south,
-            "south_raw": rows.get("南向资金", "").strip(),
-            "note": rows.get("港股口径", "").strip()}
-
-
-def parse_global(block):
-    """按「亚太收盘/欧洲收盘/美股昨夜/期货当前/汇率商品」分组；组内行 4 空格缩进。"""
-    out, cur = [], None
-    for ln in block.splitlines():
-        t = ln.strip()
-        if not t:
-            continue
-        if t in GROUPS:
-            cur = {"name": t, "rows": []}
-            out.append(cur)
-            continue
-        m = re.match(r"^(\S+)\s+([\d,]+\.\d+)\s+([+-][\d.]+%)\s*$", t)
-        if m and cur is not None:
-            cur["rows"].append({"name": m.group(1), "price": m.group(2),
-                                "pct": num(m.group(3))})
-    note = ""
-    for ln in block.splitlines():
-        m = re.match(r"^\s{2}时点说明\s{2,}(.+?)\s*$", ln)
-        if m:
-            note = m.group(1)
-    return {"groups": [g for g in out if g["rows"]], "note": note}
-
-
-def parse_broad(block):
-    """两张表：族别聚合（含「合计」行）+ 持仓当日。数值列保留脚本给的字符串，
-    只在需要上色时转数值，避免二次换算引入偏差。"""
-    fams, holds, mode = [], [], None
-    for ln in block.splitlines():
-        if "族别" in ln and "涨跌" in ln:
-            mode = "fam"
-            continue
-        if "持仓当日" in ln:
-            mode = "hold"
-            continue
-        if mode == "fam":
-            m = re.match(r"^\s{2}(\S+)\s+([+-][\d.]+%|—)\s+([\d,.]+)亿\s+"
-                         r"([+-]?[\d.]+[亿万]|—)\s+([+-]?[\d.]+亿份|—)\s*$", ln)
-            if m:
-                fams.append({"name": m.group(1), "pct": m.group(2),
-                             "amt": m.group(3), "main": m.group(4),
-                             "shares": m.group(5), "sum": m.group(1) == "合计"})
-        elif mode == "hold":
-            m = re.match(r"^\s{2}(\S+)\s+([\d.]+)\s+([+-][\d.]+%)\s+([\d.]+)亿\s+"
-                         r"([+-]?[\d.]+[亿万]|—)\s+(\S+)\s*$", ln)
-            if m:
-                holds.append({"name": m.group(1), "price": m.group(2),
-                              "pct": m.group(3), "amt": m.group(4),
-                              "main": m.group(5), "state": m.group(6)})
-    rows = _rows(block)
-    return {"fams": fams, "holds": holds,
-            "shares_note": rows.get("份额口径", "").strip(),
-            "main_note": rows.get("主力口径", "").strip(),
-            "state_note": rows.get("状态口径", "").strip()}
-
-
-def parse_evening(text):
-    d = parse_common(text)
-    d["ashare"] = parse_ashare(sec_title(text, "A股收盘", "港股收盘"))
-    d["hk"] = parse_hk(sec_title(text, "港股收盘", "全球市场"))
-    d["global"] = parse_global(sec_title(text, "全球市场", "宽基ETF全景"))
-    d["broad"] = parse_broad(sec_title(text, "宽基ETF全景", "大盘资金与国家队"))
-    d["market"] = parse_market(text)
-    d["margin"] = parse_margin(text)
-    d["impulse"] = parse_impulse(text)
-    d["ratio"] = parse_ratio(text)
-    d["news"] = parse_news(text)
-    return d
-
-
 # ------------------------------------------------------------------ 渲染
 def kv_row(css_cls, cells):
     """cells: [(文本, class)] → 一行 .rw"""
@@ -478,9 +377,9 @@ def main():
     ap.add_argument("--out", help="输出 HTML 路径，缺省按日期生成")
     a = ap.parse_args()
 
-    text = read_text(a.data)
     decision = json.loads(read_text(a.decision))
-    d = parse_evening(text)
+    d, src = read_panel(a.data, "evening")
+    sys.stderr.write("面板来源：%s\n" % src)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     date = decision.get("date") or d["date"]

@@ -69,6 +69,7 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 | 文件 | 干什么 | 别拿它做什么 |
 |---|---|---|
 | `brief.py` | 取数 + 面板输出（唯一数据源），`morning` / `noon` / `evening` 三模式 | 别在别处重算指标 |
+| `panel.py` | **面板契约**：21 个解析器 + 快照读写 + 字段校验 | 别在这里渲染 HTML；别在别处写正则解析面板 |
 | `report_gen.py` | 早/午盘：面板文本 + 决策 JSON → HTML | 别手写 HTML |
 | `evening_gen.py` | 晚报：面板文本 + 决策 JSON → HTML（复用 report_gen 的 CSS 与解析器） | 别手写 HTML；别在这里重算数字 |
 | `strategy_rules.md` | 做T 规则（四象限、六状态闸门、输出格式） | 不是知识库 |
@@ -88,7 +89,8 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 1. **序号不是主键**。段号由 `brief.py` 的 `BLOCKS` 自动生成，`report_gen` 用 `sec_title()` 按标题关键字切段。**不要再手写「八、」，也不要再按中文数字切段**（2026-11-18 前的做法，插入指标必串位）。
 2. **加指标只走两步**：`BLOCKS` 加一行 `(key, 标题关键字, 函数, 模式)`；函数里 `signal(key, value, band, hs300)` 进台账。不需要碰 `report_gen`。
    **指标段内部一律三段式**（2026-11-18 起，`market`/`margin`/`news` 已改）：`xxx_data()` 只取数并返回 dict（缺值用 `None`，不写 `—`、不补 0）→ `xxx_render(d, no)` 只做格式化并返回行列表 → `xxx_block()` 逐行 print。格式（单位、`—`、条件后缀）只允许写在 render 里，否则又回到「两处定义格式、对不上就静默丢行」。
-3. **段内行格式固定**：`两空格 + 标签 + 2 个以上空格 + 值`。report_gen 按标签正则解析，缩进和标签里的空格都会导致**整行静默丢失**。
+   > **面板格式只在两处定义**：`brief.py` 的 `print` 与 `panel.py` 的对应解析器。改打印格式必须同批改解析器，并跑 `python tools/panel_check.py`。渲染层不许再出现面板正则。
+3. **段内行格式固定**：`两空格 + 标签 + 2 个以上空格 + 值`。`panel.py` 按标签正则解析，缩进和标签里的空格都会导致**整行静默丢失**（渲染器已不含正则）。
 4. **数字只能来自 `brief.py` 输出**。不估算、不用另一路接口补算。当天 `levels()` 连续调用会有千分之几漂移，定稿一律以 `_<mode>_<date>.txt` 表格数字为准。
 5. **报告里不许出现空号**。缺段就整段跳过，`render()` 会自动收回编号。
 
@@ -116,6 +118,7 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 | 16 | 晚报宽基表「份额变化」整列是「—」 | 顺序反了：`brief.py evening` 读的是 `data/etf_flow.csv` 当日行，`etf_flow.py` 必须在它之前跑 | 固定顺序 `mx_snapshot → etf_flow --mx → brief.py evening` |
 | 17 | 晚报宽基表整段「无数据（载具报价全部缺失）」 | 把 `sh510300` 这类**带前缀码**喂给了 `quote()`：缓存键和东财 secid 都要裸码，会一路错到腾讯拼成 `shsh510300` | 统一走 `ev_bare()` 剥前缀再取数；带前缀码只用于查 `quotes_full` |
 | 18 | QDII 溢价没被拦 | 溢价率数据源未接通 | 跨境品种（513500/513650）做T 前**人工看 `data_etf` 的 `etfDisc`**（折溢价率 %）。11-16 实测 513500 = 10.43%、513650 = 8.58%，都在一年均值上方 4pp |
+| 20 | 渲染报错 `KeyError: 'ashare'` / 报告缺段但 txt 看着正常 | `read_panel` 按 mode 分派解析器，晚报必须走 `panel.parse_evening`；早期实现按「非 noon 即 morning」二分，晚报会被当成早盘解析 | 2026-11-18 已改为字典分派。见到这个错，先确认 `read_panel` 的分派表里有 evening |
 | 19 | 「大盘资金与国家队」整段只剩段头 + 「取数失败：'sh510300'」 | 旧版 `market_block` 里 `ff[c]` 没做兜底：载具规模（`etf`）有值但载具资金流（`flows_full`）缺失时抛 `KeyError`，被 `emit_blocks` 的 except 吞掉 | 2026-11-18 已改 `ff.get(c) or {}`。见到这个段只剩段头，先看 `data/_mx_<date>.json` 的 `flows_full` 是否为空 |
 
 ---
@@ -136,6 +139,12 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
    `intraday_progress`/`pool_baseline` 钉成常量），逐字节比较 market/margin/news 在三个模式下的输出；
    另有一组退化输入专打「缺数」分支——正常数据跑不到那里，而重构最容易在那里搬错条件。
    判据：正常 7 例全一致；退化 6 例允许「旧版抛异常、新版正常输出」（说明顺带修了崩溃）。
+
+6. **动了面板格式或解析器，跑 `python tools/panel_check.py`**：把 21 个解析器与搬迁前实现
+   在 15 份历史面板上逐份比 dict，缺一项就算改坏。改动涉及渲染层时再验「快照路径 vs 文本路径」
+   渲染结果字节级一致（同一份数据各渲染一次 `cmp` 即可）。
+7. **`reports/_panel_<mode>_<date>.json` 与 txt 必须同批产生**：它带文本指纹，文本被改过会自动
+   回落解析文本（stderr 会提示「快照与文本不匹配」）。见到这句不必慌，说明保护生效了。
 
 **看版式**（本机没有 playwright）：
 
