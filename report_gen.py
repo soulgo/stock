@@ -365,7 +365,7 @@ def sign(v, d=2):
     return f"{v:+.{d}f}%"
 
 
-# KDAS 六状态 → 该状态下的动作口径（readme §4.2）
+# KDAS 六状态 → 该状态下的动作口径（docs/KDAS手册.md §4.2）
 STATE_ADVICE = {
     "自然寻底": "0–1 成，不买不接刀",
     "右侧买点": "建仓信号，不做T",
@@ -783,7 +783,7 @@ def render_holdings_morning(d, decision):
         space_pct = (res - sup) / sup * 100 if sup else 0
         ok = space_pct >= 1.5 and num(lv["amp5"]) >= 1.8
         st = lv.get("state", "")
-        # 六状态决定能不能做T：只有震荡区间可做（readme §9.4）
+        # 六状态决定能不能做T：只有震荡区间可做（docs/KDAS手册.md §9.4）
         if st == "震荡区间" and ok:
             badge = '<span class="sm-pos a">震荡区间 · 可做T</span>'
         elif st == "震荡区间":

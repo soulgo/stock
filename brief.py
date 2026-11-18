@@ -1130,7 +1130,7 @@ def kdas(bars, anchors, asof=None):
 
 
 def kdas_relay(bars, anchors, lines, price):
-    """接力模式与强弱分界线（readme §5.3）。
+    """接力模式与强弱分界线（docs/KDAS手册.md §5.3）。
 
     KDAS 图上永远是 5 条线，接力 = 把锚点挪到新的关键日，所以**最新锚点画出的
     那条线就是接力链尾 = 强弱分界线**（全体系唯一状态开关）。
@@ -1153,7 +1153,7 @@ def kdas_relay(bars, anchors, lines, price):
 
 
 def kdas_state(lv, relay):
-    """六状态（readme §4.2）。唯一状态开关是「站不站得上强弱分界线」。
+    """六状态（docs/KDAS手册.md §4.2）。唯一状态开关是「站不站得上强弱分界线」。
     判据只用价格与 KDAS 线的关系，不掺其他指标。"""
     px, res = lv["price"], lv["res"]
     wr = relay.get("line")
