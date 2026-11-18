@@ -11,6 +11,28 @@
 
 ## 2026-11-18
 
+### 架构 · 目录分层：入口 / 指标库 / 离线工具 / 数据 / 报告 / 资料
+
+- **改了什么**（分 3 个提交落地，决策全文见 `docs/adr/ADR-001-目录分层.md`）
+  - **入口 5 个脚本名不变**（`brief.py` / `report_gen.py` / `evening_gen.py` / `mx_snapshot.py` / `etf_flow.py`），
+    因为 4 份定时任务 prompt 按名调用，其中云端 2 份只读。
+  - 新增 `paths.py`：`ROOT` / `DATA` / `REPORTS` / `ARCHIVE` + `data()` / `report()`，路径唯一真源。
+  - 新建 `indicators/`：`equity_bond_ratio.py`（K04）、`credit_impulse.py`（K05）自根目录迁入；
+    `brief.py` 两处 `import` 改为 `from indicators import ...`。
+  - 新建 `tools/`：`kdas.py` / `sweep.py` / `broad.py` / `grid.py` / `grid_plan.py` 迁入；
+    脚本内 `HERE` 改为显式 `ROOT`，输出改写入 `data/`。
+  - 根目录 4 个产物 JSON 收进 `data/`：`sweep_result.json` / `grid_plan.json` / `grid_data.json` / `broad_snapshot.json`。
+  - 新建 `docs/`：`INDEX.md`（文档地图）、`KDAS手册.md`（原 `readme.md` 全文，文件名保持 `readme.md` 但内容换为导航）、
+    `research/策略体系梳理_Tony.md`（原 `Tony交易策略体系梳理.md`）、`adr/ADR-001-目录分层.md`。
+  - `reports/`：最近 3 个交易日（11-16/17/18）的 18 份正式产物留根，其余 32 份（含 4 个 `.err`、8 个临时预览）移入 `reports/archive/`。
+  - 同步更新引用：`HANDOFF.md` §三/§八、`strategy_rules.md` 4 处、`knowledge/INDEX.md` 5 处、`knowledge/K00`/`K01`/`K03` 各 1 处。
+- **为什么**：12 个 `.py` 混着入口/指标库/一次性工具三层，产物写在代码旁边，`readme.md` 是 43KB 手册而项目没有入口说明，
+  `reports/` 50 个文件无法判断哪份是最终版。分层后「改 `tools/` 不会影响当天报告」变成目录层面可验证的事实。
+- **兼容性关键**：`data/_mx_<date>.json`、`data/etf_flow.csv`、`reports/_<mode>_<date>.txt` 与 5 个入口脚本站位**全部未动**，
+  所以 4 份 prompt 无需修改。`readme.md` 未改名为 `README.md`：云端 prompt 读不到，保留文件名可让任何残留引用退化成"读到导航"而非"文件不存在"。
+- **验证**：早盘 11-18 / 午盘 11-17 / 晚报 11-18 三份 HTML 用迁移前的面板文本重渲染，与基线**字节级完全一致**；
+  `tools/grid_plan.py` 迁移前后输出 `data/grid_plan.json` 完全一致；`import` 自检与 5 分钟命令链通过。
+
 ### 交付 · 新增 21:00 晚报（当日复盘，不做T）
 
 - **改了什么**

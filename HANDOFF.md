@@ -72,7 +72,10 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 | `report_gen.py` | 早/午盘：面板文本 + 决策 JSON → HTML | 别手写 HTML |
 | `evening_gen.py` | 晚报：面板文本 + 决策 JSON → HTML（复用 report_gen 的 CSS 与解析器） | 别手写 HTML；别在这里重算数字 |
 | `strategy_rules.md` | 做T 规则（四象限、六状态闸门、输出格式） | 不是知识库 |
-| `readme.md` | KDAS 体系手册（微观、分时、资金验证） | 不参与自动决策 |
+| `readme.md` | **项目导航**：三条命令 + 目录分工 + 文档地图 | 不是手册，别再往里塞理论 |
+| `docs/KDAS手册.md` | KDAS 体系手册（微观、分时、资金验证） | 不参与自动决策 |
+| `tools/*.py` | 离线工具（KDAS 画线 / 支撑扫描 / 网格 / 宽基位置） | 不在日链上，随便重跑 |
+| `indicators/*.py` | 指标计算模块（K04 股债比价 / K05 信贷脉冲） | 别在这里重算别的指标 |
 | `knowledge/K0x.md` | 单条指标的口径 / 结论 / 失效条件 | 不写代码 |
 | `portfolio.json` | 持仓 | 做T池 = holdings 去掉货币ETF |
 | `trades.md` / `signals.md` | 成交记录 / 指标读数台账 | 前者手写，后者脚本写 |
@@ -161,6 +164,6 @@ chrome --headless=new --screenshot=out.png --force-device-scale-factor=1 --windo
 
 - `signals.md` 的 `fwd20` 要攒满 20 个交易日（约 **2026-12-16**）才有第一行回填值，之后才能按 `band` 分组看「哪个档位管用」。
 - K01 份额指数首日 2026-11-16，**攒够 8 周（约 2027-01 中）才有判断价值**。
-- 三个目录整理项未做（都要改路径，需确认后再动）：4 个脚本输出的 JSON 收进 `data/`；`grid.py` + `grid_plan.py` 合并；`Tony交易策略体系梳理.md`（38KB）归档。
+- 目录整理已完成（2026-11-18，见 `docs/adr/ADR-001-目录分层.md`）：4 个产物 JSON 已收进 `data/`；`grid.py` + `grid_plan.py` **未合并**（职责仍分"算数据"与"排档位"两步，合并属行为改动，另立项）；外部资料已归档 `docs/research/`。
 - **最大的维护负担**：两条 automation 的 prompt 各约 3000 字、内容高度重复，改一次流程要同步 4 份（本地 2 + 云端 2）。后续应抽成 `RUNBOOK.md`，prompt 里只留「按 RUNBOOK 执行」。
 - 医疗 11,500 份 @0.344 的错仓（11-12 产生）仍未处置，0.346 挂单未成交。
