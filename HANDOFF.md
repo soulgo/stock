@@ -87,6 +87,7 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 
 1. **序号不是主键**。段号由 `brief.py` 的 `BLOCKS` 自动生成，`report_gen` 用 `sec_title()` 按标题关键字切段。**不要再手写「八、」，也不要再按中文数字切段**（2026-11-18 前的做法，插入指标必串位）。
 2. **加指标只走两步**：`BLOCKS` 加一行 `(key, 标题关键字, 函数, 模式)`；函数里 `signal(key, value, band, hs300)` 进台账。不需要碰 `report_gen`。
+   **指标段内部一律三段式**（2026-11-18 起，`market`/`margin`/`news` 已改）：`xxx_data()` 只取数并返回 dict（缺值用 `None`，不写 `—`、不补 0）→ `xxx_render(d, no)` 只做格式化并返回行列表 → `xxx_block()` 逐行 print。格式（单位、`—`、条件后缀）只允许写在 render 里，否则又回到「两处定义格式、对不上就静默丢行」。
 3. **段内行格式固定**：`两空格 + 标签 + 2 个以上空格 + 值`。report_gen 按标签正则解析，缩进和标签里的空格都会导致**整行静默丢失**。
 4. **数字只能来自 `brief.py` 输出**。不估算、不用另一路接口补算。当天 `levels()` 连续调用会有千分之几漂移，定稿一律以 `_<mode>_<date>.txt` 表格数字为准。
 5. **报告里不许出现空号**。缺段就整段跳过，`render()` 会自动收回编号。
@@ -115,6 +116,7 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 | 16 | 晚报宽基表「份额变化」整列是「—」 | 顺序反了：`brief.py evening` 读的是 `data/etf_flow.csv` 当日行，`etf_flow.py` 必须在它之前跑 | 固定顺序 `mx_snapshot → etf_flow --mx → brief.py evening` |
 | 17 | 晚报宽基表整段「无数据（载具报价全部缺失）」 | 把 `sh510300` 这类**带前缀码**喂给了 `quote()`：缓存键和东财 secid 都要裸码，会一路错到腾讯拼成 `shsh510300` | 统一走 `ev_bare()` 剥前缀再取数；带前缀码只用于查 `quotes_full` |
 | 18 | QDII 溢价没被拦 | 溢价率数据源未接通 | 跨境品种（513500/513650）做T 前**人工看 `data_etf` 的 `etfDisc`**（折溢价率 %）。11-16 实测 513500 = 10.43%、513650 = 8.58%，都在一年均值上方 4pp |
+| 19 | 「大盘资金与国家队」整段只剩段头 + 「取数失败：'sh510300'」 | 旧版 `market_block` 里 `ff[c]` 没做兜底：载具规模（`etf`）有值但载具资金流（`flows_full`）缺失时抛 `KeyError`，被 `emit_blocks` 的 except 吞掉 | 2026-11-18 已改 `ff.get(c) or {}`。见到这个段只剩段头，先看 `data/_mx_<date>.json` 的 `flows_full` 是否为空 |
 
 ---
 
@@ -128,6 +130,12 @@ python evening_gen.py --data "reports/_evening_$D.txt" \
 4. **晚报单独验**：`brief.py evening` 应出 9 段（一 A股 / 二 港股 / 三 全球 / 四 宽基 / 五 大盘资金 / 六 两融 / 七 K05 / 八 K04 / 九 要闻）；
    `evening_gen.py` 回执应为「A股 4 条指数 / 港股 3 条 / 全球 5 组 / 宽基 11 行族别 + 7 只持仓 / 资金面四项有 / 要闻 N 条」。
    宽基 0 行族别 = 解析正则与 `broad_block` 的列格式脱节，两张表要一起改。
+
+5. **改了指标段（`xxx_data`/`xxx_render`）必须跑 A/B 对拍**：`python tools/ab_blocks.py`。
+   它把 `HEAD` 的 `brief.py` 取出来，与工作区版本吃**同一份冻结输入**（快照 + 两融缓存 + 快讯 fixture，
+   `intraday_progress`/`pool_baseline` 钉成常量），逐字节比较 market/margin/news 在三个模式下的输出；
+   另有一组退化输入专打「缺数」分支——正常数据跑不到那里，而重构最容易在那里搬错条件。
+   判据：正常 7 例全一致；退化 6 例允许「旧版抛异常、新版正常输出」（说明顺带修了崩溃）。
 
 **看版式**（本机没有 playwright）：
 

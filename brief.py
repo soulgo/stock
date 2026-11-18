@@ -613,48 +613,40 @@ def pool_baseline(codes):
     return base
 
 
-def market_block(no, cfg=None, mode="noon"):
-    """大盘资金流向 + 国家队载具动向。数据全部来自连接器快照，缺失就明说，不估算。
-    行格式固定为「  标签<2+空格>数值」，report_gen 按标签解析。"""
+def market_data(cfg=None, mode="noon"):
+    """大盘资金与国家队——**只取数，不格式化**。
+
+    返回 dict，字段语义见 market_render()。缺失一律 None，不写 "—"、不补 0：
+    格式化留到渲染层，这样「没取到数」和「等于 0」在数据层就是两件事，
+    将来换 JSON 契约时不用再去猜文本里那个破折号是缺值还是零。
+    """
     d = MX["data"] or {}
     ff = d.get("flows_full") or {}
     qs = d.get("quotes_full") or {}
     mk = d.get("market") or {}
     etf = d.get("etf") or {}
-
-    print(f"\n{no}、大盘资金与国家队")
-    if not ff and not mk and not etf:
-        print("  无数据（连接器快照未含 market / etf / 指数资金流）")
-        return
+    out = {"mode": mode, "ok": bool(ff or mk or etf),
+           "idx": None, "market": None, "cut": None, "nat": None, "k01": None}
+    if not out["ok"]:
+        return out
 
     idx = [ff.get(c) for c in ("sh000001", "sz399001") if ff.get(c)]
     if idx:
-        main = sum(x["main"] for x in idx)
-        huge = sum(x["huge"] for x in idx)
-        big = sum(x["big"] for x in idx)
-        mid = sum(x["mid"] for x in idx)
-        small = sum(x["small"] for x in idx)
-        amt = (mk.get("amount") or 0) * 1e8          # 概览给的是「亿」
-        ratio = f"（占成交额 {main/amt*100:+.1f}%）" if amt else ""
-        print(f"  两市主力        {wan(main)}{ratio}")
-        print(f"  结构            超大单 {wan(huge)}　大单 {wan(big)}　"
-              f"中单 {wan(mid)}　小单 {wan(small)}")
-        print(f"  主力5日         {wan(sum(x.get('main5') or 0 for x in idx))}")
-        print(f"  主力10日        {wan(sum(x.get('main10') or 0 for x in idx))}")
-        print(f"  主力20日        {wan(sum(x.get('main20') or 0 for x in idx))}")
-    else:
-        print("  两市主力        无数据（指数资金流缺失）")
+        out["idx"] = {"main": sum(x["main"] for x in idx),
+                      "huge": sum(x["huge"] for x in idx),
+                      "big": sum(x["big"] for x in idx),
+                      "mid": sum(x["mid"] for x in idx),
+                      "small": sum(x["small"] for x in idx),
+                      "main5": sum(x.get("main5") or 0 for x in idx),
+                      "main10": sum(x.get("main10") or 0 for x in idx),
+                      "main20": sum(x.get("main20") or 0 for x in idx),
+                      "amount": (mk.get("amount") or 0) * 1e8}   # 概览给的是「亿」
 
     if mk:
-        print(f"  上涨/下跌       {mk.get('up') or '—'} / {mk.get('down') or '—'}")
-        print(f"  涨停/跌停       {mk.get('limit_up') or '—'} / {mk.get('limit_dn') or '—'}")
-        r = mk.get("amount_ratio20")
-        amt = mk.get("amount") or 0
-        tail = f"，20日均量 {r:.0f}%" if r else ""
-        print(f"  成交额          {amt:,.0f}亿（{mk.get('date') or '—'} 收盘{tail}）")
-        note = ("（收盘口径；日期若为昨日说明概览未更新，以「A股收盘」的指数成交额为准）"
-                if mode == "evening" else "（收盘口径，非当日盘中）")
-        print(f"  概览统计日      {mk.get('date') or '—'}{note}")
+        out["market"] = {"up": mk.get("up"), "down": mk.get("down"),
+                         "limit_up": mk.get("limit_up"), "limit_dn": mk.get("limit_dn"),
+                         "amount": mk.get("amount") or 0,
+                         "ratio20": mk.get("amount_ratio20"), "date": mk.get("date")}
 
     # 同时点成交量倍数：国家队进场的必要不充分信号（真进场必经放量）。
     # 午盘按日内进度折算；晚报是收盘复盘，「全天」就按 100% 算 —— 不读时钟，
@@ -674,55 +666,122 @@ def market_block(no, cfg=None, mode="noon"):
         if nq and a20 > 0:
             bench = a20 * prog
             x = today / bench
-            tip = ("未见进场迹象" if x < 0.85 else
-                   "量能持平" if x < 1.2 else
-                   "明显放量" if x < 1.8 else "异常放量，重点看资金方向")
-            span = "全天已走完" if mode == "evening" else "历史同时点已走完"
-            print(f"  载具同时点      {x:.2f}×（今日 {today/1e8:,.1f}亿 / 基准 {bench/1e8:,.1f}亿，"
-                  f"{span} {prog*100:.1f}%）→ {tip}")
+            out["cut"] = {"x": x, "today": today, "bench": bench, "prog": prog,
+                          "span": "全天已走完" if mode == "evening" else "历史同时点已走完",
+                          "tip": ("未见进场迹象" if x < 0.85 else
+                                  "量能持平" if x < 1.2 else
+                                  "明显放量" if x < 1.8 else "异常放量，重点看资金方向")}
         else:
-            print(f"  载具同时点      无数据（{nq} 只有效）")
+            out["cut"] = {"nq": nq}
 
-    nats = [(c, fam, ff[c], etf.get(c)) for c, fam in NATIONAL if ff.get(c) or etf.get(c)]
-    exts = [(c, fam, ff[c], etf.get(c)) for c, fam in NATIONAL_EXT if ff.get(c) or etf.get(c)]
+    nats = [(c, fam, ff.get(c) or {}, etf.get(c)) for c, fam in NATIONAL
+            if ff.get(c) or etf.get(c)]
+    exts = [(c, fam, ff.get(c) or {}, etf.get(c)) for c, fam in NATIONAL_EXT
+            if ff.get(c) or etf.get(c)]
     if nats:
-        m1 = sum((x[2] or {}).get("main", 0) for x in nats)
-        m5 = sum((x[2] or {}).get("main5", 0) for x in nats)
-        size = sum((x[3] or {}).get("size") or 0 for x in nats)
-        inflow = [x for x in nats if (x[2] or {}).get("main", 0) > 0]
-        print(f"  载具今日        {wan(m1)}（{len(nats)} 只，{len(inflow)} 只净流入）")
-        print(f"  载具5日         {wan(m5)}")
-        print(f"  载具规模        {size/1e8:,.0f}亿")
-        if exts:
-            em = sum((x[2] or {}).get("main", 0) for x in exts)
-            esize = sum((x[3] or {}).get("size") or 0 for x in exts)
-            ein = len([x for x in exts if (x[2] or {}).get("main", 0) > 0])
-            print(f"  载具观察        {wan(em)}（{len(exts)} 只，{ein} 只净流入"
-                  + (f"；规模 {esize/1e8:,.0f}亿" if esize else "") + "）")
         fam_sum = {}
         for c, fam, fl, et in nats:
             fam_sum[fam] = fam_sum.get(fam, 0) + ((fl or {}).get("main", 0))
-        print("  载具分族        " + "｜".join(
-            f"{f} {wan(fam_sum[f])}" for f in FAM_ORDER if f in fam_sum))
-        print("  载具明细        " + "｜".join(
-            f"{c[2:] if c.startswith(('sh', 'sz')) else c} {wan((fl or {}).get('main', 0))}"
-            for c, fam, fl, et in nats + exts))
-        print(f"  载具说明        主力净额是场内交易口径，不等于申购份额；"
-              f"份额变化看 K01（etf_flow.py），两者背离时以份额为准")
+        out["nat"] = {
+            "m1": sum((x[2] or {}).get("main", 0) for x in nats),
+            "m5": sum((x[2] or {}).get("main5", 0) for x in nats),
+            "size": sum((x[3] or {}).get("size") or 0 for x in nats),
+            "n": len(nats),
+            "inflow": len([x for x in nats if (x[2] or {}).get("main", 0) > 0]),
+            "ext": None if not exts else {
+                "m": sum((x[2] or {}).get("main", 0) for x in exts),
+                "size": sum((x[3] or {}).get("size") or 0 for x in exts),
+                "in": len([x for x in exts if (x[2] or {}).get("main", 0) > 0]),
+                "n": len(exts)},
+            "fam": [(f, fam_sum[f]) for f in FAM_ORDER if f in fam_sum],
+            "detail": [(c, (fl or {}).get("main", 0)) for c, fam, fl, et in nats + exts],
+        }
 
-    # K01 份额指数（etf_flow.py 每日写一份汇总，缺失就跳过）
-    try:
+    try:                      # K01 份额指数（etf_flow.py 每日写一份汇总，缺失就跳过）
         with open(data("k01_index.json"), encoding="utf-8") as f:
-            k01 = json.load(f)
-        ch = k01.get("chg_shares")
-        print(f"  载具份额        {k01.get('date')} 主池 {k01.get('pool')} 只合计 "
-              f"{(k01.get('total_shares') or 0)/1e8:,.1f}亿份"
-              + (f"，较上一记录 {ch/1e8:+.2f}亿份" if ch not in (None, 0) else "（区间首日，无前值）")
-              + f"｜加仓指数 {k01.get('index', 100):.1f}")
-        if k01.get("note"):
-            print(f"  份额口径        {k01['note']}")
+            out["k01"] = json.load(f)
     except Exception:
         pass
+    return out
+
+
+def market_render(d, no):
+    """market_data() → 面板行。**单位换算、"—"、条件后缀只在这里定义**（格式的唯一真源）。"""
+    lines = ["", f"{no}、大盘资金与国家队"]
+    if not d["ok"]:
+        lines.append("  无数据（连接器快照未含 market / etf / 指数资金流）")
+        return lines
+
+    if d["idx"]:
+        i = d["idx"]
+        amt = i["amount"]
+        ratio = f"（占成交额 {i['main']/amt*100:+.1f}%）" if amt else ""
+        lines.append(f"  两市主力        {wan(i['main'])}{ratio}")
+        lines.append(f"  结构            超大单 {wan(i['huge'])}　大单 {wan(i['big'])}　"
+                     f"中单 {wan(i['mid'])}　小单 {wan(i['small'])}")
+        lines.append(f"  主力5日         {wan(i['main5'])}")
+        lines.append(f"  主力10日        {wan(i['main10'])}")
+        lines.append(f"  主力20日        {wan(i['main20'])}")
+    else:
+        lines.append("  两市主力        无数据（指数资金流缺失）")
+
+    mk = d["market"]
+    if mk:
+        lines.append(f"  上涨/下跌       {mk['up'] or '—'} / {mk['down'] or '—'}")
+        lines.append(f"  涨停/跌停       {mk['limit_up'] or '—'} / {mk['limit_dn'] or '—'}")
+        r = mk["ratio20"]
+        tail = f"，20日均量 {r:.0f}%" if r else ""
+        lines.append(f"  成交额          {mk['amount']:,.0f}亿（{mk['date'] or '—'} 收盘{tail}）")
+        note = ("（收盘口径；日期若为昨日说明概览未更新，以「A股收盘」的指数成交额为准）"
+                if d["mode"] == "evening" else "（收盘口径，非当日盘中）")
+        lines.append(f"  概览统计日      {mk['date'] or '—'}{note}")
+
+    cut = d["cut"]
+    if cut:
+        if "x" in cut:
+            lines.append(f"  载具同时点      {cut['x']:.2f}×（今日 {cut['today']/1e8:,.1f}亿 / "
+                         f"基准 {cut['bench']/1e8:,.1f}亿，{cut['span']} {cut['prog']*100:.1f}%）"
+                         f"→ {cut['tip']}")
+        else:
+            lines.append(f"  载具同时点      无数据（{cut['nq']} 只有效）")
+
+    nat = d["nat"]
+    if nat:
+        lines.append(f"  载具今日        {wan(nat['m1'])}（{nat['n']} 只，{nat['inflow']} 只净流入）")
+        lines.append(f"  载具5日         {wan(nat['m5'])}")
+        lines.append(f"  载具规模        {nat['size']/1e8:,.0f}亿")
+        e = nat["ext"]
+        if e:
+            lines.append(f"  载具观察        {wan(e['m'])}（{e['n']} 只，{e['in']} 只净流入"
+                         + (f"；规模 {e['size']/1e8:,.0f}亿" if e["size"] else "") + "）")
+        lines.append("  载具分族        " + "｜".join(f"{f} {wan(v)}" for f, v in nat["fam"]))
+        lines.append("  载具明细        " + "｜".join(
+            f"{c[2:] if c.startswith(('sh', 'sz')) else c} {wan(m)}" for c, m in nat["detail"]))
+        lines.append("  载具说明        主力净额是场内交易口径，不等于申购份额；"
+                     "份额变化看 K01（etf_flow.py），两者背离时以份额为准")
+
+    k01 = d["k01"]
+    if k01:
+        try:                  # 单段坏数据不能拖垮整段：原实现在同一个 try 里连打印一起兜住
+            ch = k01.get("chg_shares")
+            lines.append(f"  载具份额        {k01.get('date')} 主池 {k01.get('pool')} 只合计 "
+                         f"{(k01.get('total_shares') or 0)/1e8:,.1f}亿份"
+                         + (f"，较上一记录 {ch/1e8:+.2f}亿份"
+                            if ch not in (None, 0) else "（区间首日，无前值）")
+                         + f"｜加仓指数 {k01.get('index', 100):.1f}")
+            if k01.get("note"):
+                lines.append(f"  份额口径        {k01['note']}")
+        except Exception:
+            pass
+    return lines
+
+
+def market_block(no, cfg=None, mode="noon"):
+    """大盘资金流向 + 国家队载具动向。三段式：market_data 取数 → dict → market_render 出行。
+    行格式固定为「  标签<2+空格>数值」，report_gen 按标签解析。"""
+    for line in market_render(market_data(cfg, mode), no):
+        print(line)
+
 
 
 # ---------------------------------------------------------------- 融资融券（两融）
@@ -828,63 +887,90 @@ def margin_etf(codes):
         return {}
 
 
-def margin_block(no, cfg, mode="noon"):
-    """融资融券段：回答「这批钱是不是借来的」。资金流只看买卖方向，看不出杠杆成分。"""
-    print(f"\n{no}、融资融券（两融杠杆）")
+MARGIN_DIR = {
+    "both_up": "5日与10日同向净买入，杠杆资金在持续加仓",
+    "both_dn": "5日与10日同向净卖出，杠杆资金在持续撤离",
+    "rebound": "5日回补、10日仍在撤，短期反弹不改中期去杠杆",
+    "falling": "5日继续撤、10日仍为正，杠杆正在从高位回落",
+}
+
+
+def margin_data(cfg):
+    """两融：只取数。持仓明细保留**原始数值**，单位与小数位交给 margin_render。"""
     rows = margin_market()
+    out = {"rows": rows, "cur": None, "dir_key": None, "pos": [],
+           "has_etf": False, "data_date": None}
     if not rows:
-        print("  无数据（东财数据中心取数失败；两融为 T+1 披露，次日再看）")
-        return
+        return out
     cur = rows[0]
-
-    def _yi(v, d=0):
-        return "—" if v is None else f"{v/1e8:,.{d}f}亿"
-
-    def _chg(v):
-        return "—" if v is None else f"{v/1e8:+,.0f}亿"
-
-    rz = cur.get("rzye")
-    print(f"  两融余额        {_yi(cur.get('rzrqye'))}（{cur['date']}，T+1 披露）")
-    print(f"  融资余额        {_yi(rz)}｜日变化 {_chg(cur.get('rzjme'))}"
-          f"｜5日 {_chg(cur.get('rzjme5'))}｜10日 {_chg(cur.get('rzjme10'))}")
-    if cur.get("rzye_zb"):
-        print(f"  融资余额占比    {cur['rzye_zb']:.2f}%（占 A 股流通市值，衡量杠杆拥挤度）")
-    buy, sell = cur.get("rzmre"), cur.get("rzche")
-    if buy and sell:
-        print(f"  融资买入/偿还   {_yi(buy)} / {_yi(sell)}"
-              f"（{'偿还多于买入，杠杆净收缩' if sell > buy else '买入多于偿还，杠杆净加仓'}）")
-    if cur.get("rqye") and rz:
-        print(f"  融券余额        {_yi(cur['rqye'])}（为融资余额的 {cur['rqye']/rz*100:.1f}%，"
-              f"做空意愿的代理，规模小则方向信号弱）")
-    if cur.get("idx"):
-        print(f"  指数同步        {cur['idx']:,.2f} {(cur.get('zdf') or 0):+.2f}%"
-              f"｜5日 {(cur.get('zdf5') or 0):+.2f}%｜10日 {(cur.get('zdf10') or 0):+.2f}%")
+    out["cur"] = cur
     m5, m10 = cur.get("rzjme5") or 0, cur.get("rzjme10") or 0
-    if m5 > 0 and m10 > 0:
-        d_ = "5日与10日同向净买入，杠杆资金在持续加仓"
-    elif m5 < 0 and m10 < 0:
-        d_ = "5日与10日同向净卖出，杠杆资金在持续撤离"
-    elif m5 > 0 > m10:
-        d_ = "5日回补、10日仍在撤，短期反弹不改中期去杠杆"
-    else:
-        d_ = "5日继续撤、10日仍为正，杠杆正在从高位回落"
-    print(f"  杠杆方向        {d_}")
+    out["dir_key"] = ("both_up" if m5 > 0 and m10 > 0 else
+                      "both_dn" if m5 < 0 and m10 < 0 else
+                      "rebound" if m5 > 0 > m10 else "falling")
 
     me = margin_etf([h["code"] for h in cfg["holdings"]])
     if me:
-        segs = []
+        out["has_etf"] = True
         for h in cfg["holdings"]:
             c = h["code"][2:] if h["code"][:2].lower() in ("sh", "sz") else h["code"]
             x = me.get(c)
             if not x or not x.get("rzye"):
                 continue
-            segs.append(f"{c} {x['rzye']/1e8:.2f}亿(净买{(x.get('rzjme') or 0)/1e4:+.0f}万"
-                        f"/5日{(x.get('rzjme5') or 0)/1e4:+.0f}万)")
-        print("  持仓两融        " + ("｜".join(segs) if segs else "无记录（均非两融标的）"))
+            out["pos"].append({"code": c, "rzye": x["rzye"],
+                               "rzjme": x.get("rzjme") or 0, "rzjme5": x.get("rzjme5") or 0})
         md = sorted({v.get("date") for v in me.values() if v.get("date")})
-        print(f"  两融数据日      {md[-1] if md else '—'}（T+1，比报价慢一天，只能用来看趋势）")
-    print("  两融口径        融资余额升=借钱加仓、降=去杠杆；只覆盖两融标的，非标的缺席不补值；"
-          "与资金流背离时以资金流看当下、以两融看仓位")
+        out["data_date"] = md[-1] if md else None
+    return out
+
+
+def margin_render(d, no):
+    """margin_data() → 面板行。"""
+    lines = ["", f"{no}、融资融券（两融杠杆）"]
+    if not d["rows"]:
+        lines.append("  无数据（东财数据中心取数失败；两融为 T+1 披露，次日再看）")
+        return lines
+    cur = d["cur"]
+
+    def _yi(v, dd=0):
+        return "—" if v is None else f"{v/1e8:,.{dd}f}亿"
+
+    def _chg(v):
+        return "—" if v is None else f"{v/1e8:+,.0f}亿"
+
+    rz = cur.get("rzye")
+    lines.append(f"  两融余额        {_yi(cur.get('rzrqye'))}（{cur['date']}，T+1 披露）")
+    lines.append(f"  融资余额        {_yi(rz)}｜日变化 {_chg(cur.get('rzjme'))}"
+                 f"｜5日 {_chg(cur.get('rzjme5'))}｜10日 {_chg(cur.get('rzjme10'))}")
+    if cur.get("rzye_zb"):
+        lines.append(f"  融资余额占比    {cur['rzye_zb']:.2f}%（占 A 股流通市值，衡量杠杆拥挤度）")
+    buy, sell = cur.get("rzmre"), cur.get("rzche")
+    if buy and sell:
+        lines.append(f"  融资买入/偿还   {_yi(buy)} / {_yi(sell)}"
+                     f"（{'偿还多于买入，杠杆净收缩' if sell > buy else '买入多于偿还，杠杆净加仓'}）")
+    if cur.get("rqye") and rz:
+        lines.append(f"  融券余额        {_yi(cur['rqye'])}（为融资余额的 {cur['rqye']/rz*100:.1f}%，"
+                     f"做空意愿的代理，规模小则方向信号弱）")
+    if cur.get("idx"):
+        lines.append(f"  指数同步        {cur['idx']:,.2f} {(cur.get('zdf') or 0):+.2f}%"
+                     f"｜5日 {(cur.get('zdf5') or 0):+.2f}%｜10日 {(cur.get('zdf10') or 0):+.2f}%")
+    lines.append(f"  杠杆方向        {MARGIN_DIR[d['dir_key']]}")
+
+    if d["has_etf"]:
+        segs = [f"{p['code']} {p['rzye']/1e8:.2f}亿(净买{p['rzjme']/1e4:+.0f}万"
+                f"/5日{p['rzjme5']/1e4:+.0f}万)" for p in d["pos"]]
+        lines.append("  持仓两融        " + ("｜".join(segs) if segs else "无记录（均非两融标的）"))
+        lines.append(f"  两融数据日      {d['data_date'] or '—'}（T+1，比报价慢一天，只能用来看趋势）")
+    lines.append("  两融口径        融资余额升=借钱加仓、降=去杠杆；只覆盖两融标的，非标的缺席不补值；"
+                 "与资金流背离时以资金流看当下、以两融看仓位")
+    return lines
+
+
+def margin_block(no, cfg, mode="noon"):
+    """融资融券段：回答「这批钱是不是借来的」。资金流只看买卖方向，看不出杠杆成分。"""
+    for line in margin_render(margin_data(cfg), no):
+        print(line)
+
 
 
 # ---------------------------------------------------------------- 做T 战果
@@ -1055,14 +1141,14 @@ def news_feed(hours=6, max_pages=3):
     return uniq
 
 
-def news_block(no, cfg=None, mode="noon"):
-    sub = "今日要闻，便于复盘" if mode == "evening" else "近期发生的事，便于即时判断"
-    print(f"\n{no}、实时快讯（{sub}）")
+def news_data(mode="noon"):
+    """快讯：取数 + 筛选（去重、同关键词限流属于数据层），格式化交给 news_render。"""
     hours = 14 if mode == "morning" else 12 if mode == "evening" else 6
     items = news_feed(hours=hours)
+    out = {"hours": hours, "items_n": len(items), "hit": [], "rest": [],
+           "updated": f"{datetime.now():%H:%M}"}
     if not items:
-        print("  无数据（东财 / 新浪 7x24 均不可用，或窗口内无更新）")
-        return
+        return out
     # 同一关键词最多 3 条：挡掉「5 家药企同一天公告医保目录」这类同质刷屏
     hit, kwcnt = [], {}
     for x in items:
@@ -1075,15 +1161,35 @@ def news_block(no, cfg=None, mode="noon"):
         hit.append(x)
         if len(hit) >= 8:
             break
-    rest = [x for x in items if x not in hit]
-    print(f"  更新时间        {datetime.now():%H:%M}（近 {hours} 小时，去重后 {len(items)} 条，"
-          f"相关 {len(hit)} 条）")
-    for x in hit[:8]:
-        print(f"  {x['time']}  相关  {x['title']}｜{x['src']}")
-    for x in rest[:4]:
-        print(f"  {x['time']}  快讯  {x['title']}｜{x['src']}")
-    print("  快讯口径        东财 + 新浪 7x24 合并去重，只给事实不解读；"
-          "与资金流/两融方向矛盾时以数据为准，消息只当情绪参考")
+    out["hit"] = hit[:8]
+    out["rest"] = [x for x in items if x not in hit][:4]
+    return out
+
+
+def news_render(d, no, mode="noon"):
+    """news_data() → 面板行。"""
+    sub = "今日要闻，便于复盘" if mode == "evening" else "近期发生的事，便于即时判断"
+    lines = ["", f"{no}、实时快讯（{sub}）"]
+    if not d["items_n"]:
+        lines.append("  无数据（东财 / 新浪 7x24 均不可用，或窗口内无更新）")
+        return lines
+    lines.append(f"  更新时间        {d['updated']}（近 {d['hours']} 小时，去重后 {d['items_n']} 条，"
+                 f"相关 {len(d['hit'])} 条）")
+    for x in d["hit"]:
+        lines.append(f"  {x['time']}  相关  {x['title']}｜{x['src']}")
+    for x in d["rest"]:
+        lines.append(f"  {x['time']}  快讯  {x['title']}｜{x['src']}")
+    lines.append("  快讯口径        东财 + 新浪 7x24 合并去重，只给事实不解读；"
+                 "与资金流/两融方向矛盾时以数据为准，消息只当情绪参考")
+    return lines
+
+
+def news_block(no, cfg=None, mode="noon"):
+    """实时快讯段。"""
+    for line in news_render(news_data(mode), no, mode):
+        print(line)
+
+
 
 # ---------------------------------------------------------------- KDAS
 def auto_anchors(bars, n=5, win=10, max_back=250):

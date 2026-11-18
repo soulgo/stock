@@ -11,6 +11,18 @@
 
 ## 2026-11-18
 
+### 架构 · 指标段三段式：data → dict → render（ADR-002 第一步）
+
+- **改了什么**（只动 `brief.py`，`report_gen.py` 一行未改）
+  - `market_block` → `market_data(cfg, mode)` + `market_render(d, no)` + 薄壳 `market_block`；dict 分 `ok / idx / market / cut / nat / k01` 六块，缺值一律 `None`。
+  - `margin_block` → `margin_data(cfg)` + `margin_render(d, no)`；杠杆方向由四段中文改成 `dir_key`（`both_up/both_dn/rebound/falling`）+ 渲染期映射 `MARGIN_DIR`；持仓明细只带原始数值，小数位留在渲染层。
+  - `news_block` → `news_data(mode)` + `news_render(d, no, mode)`；更新时间落在数据层，去重与同关键词限流仍在数据层（属语义筛选，非格式化）。
+  - `BLOCKS` 注册表、函数签名、行格式**全部未变**，所以上游 `emit_blocks` 与下游 parser 都不受影响。
+  - 顺带修一处既有缺陷：`ff[c]` 在「载具规模有值、载具资金流缺失」时抛 `KeyError`（旧版整段丢失），改为 `ff.get(c) or {}`。
+- **为什么**：文本是 `brief.py` 与 `report_gen.py` 之间唯一的契约，且没有机器可校验的约束——格式漂移不报错、只静默少一块（坑 #3/#4/#5 同一病根）；同时缺值经 `num("—")→0.0` 与 0 同形、价格经 3 位小数二次损失精度。先让产端出 dict，是换成显式契约的最便宜一步。
+- **验证**：新旧两版吃**同一份冻结输入**（`data/_mx_2026-11-18.json` + 两融缓存 + 快讯 fixture，`intraday_progress`/`pool_baseline` 钉成常量）逐字节对拍 —— 正常路径 7 例（market×3 模式、margin、news×3 模式）全一致；退化输入 6 例（空快照/无概览/无资金流/无 quotes/基准全 0/两融无记录）5 例一致、1 例为上述 `KeyError` 修复。实跑 `brief.py morning` 得 9 段、exit 0；`parse_market` 对同一段文本仍能取到 main/fam/nat/ext/k01/amount。
+- **决策全文**：`docs/adr/ADR-002-指标段数据结构.md`（含放弃的方案：一次性全换 JSON、只拆文件不换契约、只加校验函数）。
+
 ### 架构 · 目录分层：入口 / 指标库 / 离线工具 / 数据 / 报告 / 资料
 
 - **改了什么**（分 3 个提交落地，决策全文见 `docs/adr/ADR-001-目录分层.md`）
