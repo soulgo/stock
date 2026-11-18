@@ -33,7 +33,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+from paths import DATA, ROOT, data    # 路径唯一真源（ADR-001），不要自己拼 data/
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 TOKEN = "fa5fd1943c7b386f172d6893dbfba10b"
@@ -229,7 +229,7 @@ MX_TTL = 3          # 分钟
 
 
 def _mx_path():
-    return os.path.join(BASE, "data", f"_mx_{datetime.now():%Y-%m-%d}.json")
+    return data(f"_mx_{datetime.now():%Y-%m-%d}.json")
 
 
 def load_mx():
@@ -578,7 +578,7 @@ def intraday_progress(dt=None):
     return 1.0
 
 
-BASE_CACHE = os.path.join(BASE, "data", "pool_baseline.json")
+BASE_CACHE = data("pool_baseline.json")
 
 
 def pool_baseline(codes):
@@ -712,7 +712,7 @@ def market_block(no, cfg=None, mode="noon"):
 
     # K01 份额指数（etf_flow.py 每日写一份汇总，缺失就跳过）
     try:
-        with open(os.path.join(BASE, "data", "k01_index.json"), encoding="utf-8") as f:
+        with open(data("k01_index.json"), encoding="utf-8") as f:
             k01 = json.load(f)
         ch = k01.get("chg_shares")
         print(f"  载具份额        {k01.get('date')} 主池 {k01.get('pool')} 只合计 "
@@ -728,8 +728,8 @@ def market_block(no, cfg=None, mode="noon"):
 # ---------------------------------------------------------------- 融资融券（两融）
 # 两融是杠杆资金的仓位表：融资余额升 = 有人借钱买，降 = 去杠杆。
 # 它比资金流慢（T+1 披露），但能回答资金流答不了的问题——「这波是谁加的杠杆、加了多少」。
-MARGIN_MK_CACHE = os.path.join(BASE, "data", "margin_market.json")
-MARGIN_ETF_CACHE = os.path.join(BASE, "data", "margin_etf.json")
+MARGIN_MK_CACHE = data("margin_market.json")
+MARGIN_ETF_CACHE = data("margin_etf.json")
 
 
 def dcget(report, **kw):
@@ -891,7 +891,7 @@ def margin_block(no, cfg, mode="noon"):
 # 成本下降有两种来源，必须分开记账，否则「加仓摊薄」会被误当成「做T赚钱」：
 #   ① 做T 差价：同一标的低买高卖实现的钱 → 计入 realized
 #   ② 加仓摊薄：低位补仓把均价拉低（份额变多、总成本变高）→ 不计收益，标 `diluted`
-TLEDGER = os.path.join(BASE, "data", "t_ledger.json")
+TLEDGER = data("t_ledger.json")
 
 
 def tledger():
@@ -1296,11 +1296,11 @@ def print_xcheck(cfg):
 def ratio_block(no="八", cfg=None, mode="morning"):
     """K04 股债比价（沪深300全收益 ÷ 二级债基）。环境/估值模块，放在报告文末。
     下沿（≤1.0）是股票便宜的区域、可当扳机；上沿（≥1.3）只能当温度计（泡沫没上限）。
-    数据与口径全部来自 equity_bond_ratio.py / knowledge K04，不在这里重算。"""
+    数据与口径全部来自 indicators/equity_bond_ratio.py / knowledge K04，不在这里重算。"""
     print()
     print(f"{no}、股债比价（K04 沪深300全收益 ÷ 二级债基）")
     try:
-        import equity_bond_ratio as ebr
+        from indicators import equity_bond_ratio as ebr
         o = ebr.build(ebr.load_anchor(), tries=2)  # 报告链路只重试 2 次，避免拖慢定时任务
         o["bond_temp"] = ebr.bond_temp()
     except Exception as e:
@@ -1367,7 +1367,7 @@ def ratio_block(no="八", cfg=None, mode="morning"):
         print(f"  持仓        无宽基持仓（{others} 只均非宽基），本指标对当前组合无直接含义")
 
     if live:
-        print(f"  口径        盘中估算，债腿当不动；收盘后以 equity_bond_ratio.py 重算为准")
+        print(f"  口径        盘中估算，债腿当不动；收盘后以 indicators/equity_bond_ratio.py 重算为准")
     elif mode == "morning":
         print(f"  口径        上一交易日收盘口径（盘前无实时）；债腿=锚点+中证全债推进代理，误差约 ±1%")
     else:
@@ -1379,9 +1379,9 @@ def ratio_block(no="八", cfg=None, mode="morning"):
 # ---------------------------------------------------------------- 早盘
 def impulse_block(no, cfg=None, mode="morning"):
     """K05 信贷脉冲：月频指标，在日报里只当「背景板 + 否决位」，不参与日内择时。
-    实际计算与口径全在 credit_impulse.py / knowledge K05，这里只做调用与失败兜底。"""
+    实际计算与口径全在 indicators/credit_impulse.py / knowledge K05，这里只做调用与失败兜底。"""
     try:
-        import credit_impulse as ci
+        from indicators import credit_impulse as ci
         s = ci.block(no, mode)
         if s:
             signal("K05", f"{s['p_all']:+.2f}", s["band"], s.get("px"))   # 台账留痕（仅午盘落盘）
@@ -1517,7 +1517,7 @@ def global_block(no):
 
 def ev_shares(codes):
     """从 data/etf_flow.csv 取「今天」的份额变化。没有今天的记录返回 {}，不猜不补 0。"""
-    path = os.path.join(BASE, "data", "etf_flow.csv")
+    path = data("etf_flow.csv")
     today = datetime.now().strftime("%Y-%m-%d")
     out = {}
     try:
@@ -1687,7 +1687,7 @@ def emit_blocks(cfg, mode, start):
 # ---------------------------------------------------------------- 指标读数台账
 # 每条读数记一行，半年后能回答「这个档位真的管用吗」。没有这张表，加第 12 个指标
 # 和第 3 个指标一样不可信——这是「指标体系」和「指标堆」的唯一区别。
-SIGNALS_MD = os.path.join(BASE, "signals.md")
+SIGNALS_MD = os.path.join(ROOT, "signals.md")
 _SIG_TITLE = "## 台账"
 _SIG_COLS = "| date | key | value | band | hs300 | fwd20 |\n|---|---|---|---|---|---|\n"
 _SIG_HEAD = (
@@ -2094,7 +2094,7 @@ def main():
     load_mx()
     if a.selftest:
         return selftest(a.selftest)
-    with open(os.path.join(BASE, "portfolio.json"), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, "portfolio.json"), encoding="utf-8") as f:
         cfg = json.load(f)
     # 货币ETF只做现金管理，不进做T池（否则会算进市值合计、占一行 KDAS 关键位）
     cfg["holdings"] = [h for h in cfg["holdings"]

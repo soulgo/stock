@@ -41,7 +41,6 @@ from report_gen import (
     parse_market, parse_margin, parse_impulse, parse_ratio, parse_news,
 )
 
-BASE = os.path.dirname(os.path.abspath(__file__))
 
 # ------------------------------------------------------------------ 晚报补充样式
 # 只加早午盘没用到的两类：族别表 / 全球分组卡。颜色沿用 report_gen 的 CSS 变量，

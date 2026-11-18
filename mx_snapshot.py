@@ -24,8 +24,7 @@ import json
 import os
 from datetime import datetime
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
+from paths import DATA                  # 路径唯一真源（ADR-001）
 
 
 def bare(code):

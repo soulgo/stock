@@ -38,12 +38,14 @@ import time
 import urllib.request
 from datetime import date, datetime, timedelta
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BASE)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from paths import DATA, REPORTS  # noqa: E402  路径唯一真源（ADR-001）
 
-ANCHOR_F = os.path.join(BASE, "data", "equity_bond_anchor.json")
-CSV_F = os.path.join(BASE, "data", "equity_bond_ratio.csv")
-REPORT_DIR = os.path.join(BASE, "reports")
+ANCHOR_F = os.path.join(DATA, "equity_bond_anchor.json")
+CSV_F = os.path.join(DATA, "equity_bond_ratio.csv")
+REPORT_DIR = REPORTS
 
 # 阈值档位：比价 → (名称, 说明)。从上往下排，取第一个 r >= 阈值 的档。
 # 下沿（≤1.0）= 股票便宜，定量、可当扳机；上沿（≥1.3）= 股票贵过债，只能当温度计。

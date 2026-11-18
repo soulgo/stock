@@ -78,8 +78,9 @@ import re
 import sys
 from datetime import datetime
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(BASE, "reports")
+from paths import REPORTS              # 路径唯一真源（ADR-001）
+
+OUT_DIR = REPORTS
 
 E = lambda s: html.escape(str(s), quote=True)
 

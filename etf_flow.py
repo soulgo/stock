@@ -30,9 +30,10 @@ import sys
 import urllib.request
 from datetime import date
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(BASE, "data", "etf_flow.csv")
-INDEX_PATH = os.path.join(BASE, "data", "k01_index.json")
+from paths import data                  # 路径唯一真源（ADR-001）
+
+CSV_PATH = data("etf_flow.csv")
+INDEX_PATH = data("k01_index.json")
 UA = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
 
 # (代码, 市场 1沪/0深, 名称, 指数族, 层级 core=年报确认汇金持仓 / watch=同族观察)

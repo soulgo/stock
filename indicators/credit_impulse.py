@@ -31,8 +31,12 @@ import math
 import argparse
 from datetime import datetime
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-CSV = os.path.join(BASE, "data", "social_financing.csv")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from paths import DATA, REPORTS  # noqa: E402  路径唯一真源（ADR-001）
+
+CSV = os.path.join(DATA, "social_financing.csv")
 
 
 # ---------------------------------------------------------------- 数据
@@ -101,7 +105,7 @@ def pulses(rows):
 
 
 # ---------------------------------------------------------------- 沪深300 同比
-HS300 = os.path.join(BASE, "data", "hs300_month.csv")
+HS300 = os.path.join(DATA, "hs300_month.csv")
 
 
 def hs300_monthly(refresh=False):
