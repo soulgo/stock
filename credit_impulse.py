@@ -282,6 +282,7 @@ def block(no="八", mode="morning"):
     print(f"  拐点        {s['turn']}（{s['turn_why']}）")
     print(f"  含义        {s['act']}")
     print(f"  数据        {s['m']} 社融 · 下次更新 {s['next']}{s['warn']}")
+    return s      # 供 brief.py 登记 signals.md 台账（含 p_all / band / px）
 
 
 # ---------------------------------------------------------------- 主流程

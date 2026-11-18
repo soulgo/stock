@@ -12,6 +12,11 @@ brief.py — 持仓做T数据面板（免密钥）
   python brief.py noon       # 12:30 用：A股上午 + 资金流 + 日内位置 + 关键位
   python brief.py morning --src em     # 强制走东财（腾讯异常时用）
   python brief.py morning --selftest 512170   # 打印腾讯原始字段，核对字段位
+  python brief.py --signals backfill   # 回填 signals.md 的 fwd20（离线，用表内未来点位）
+
+扩展指标（2026-11-18 起）：在 BLOCKS 注册表加一行 (key, 标题关键字, 函数, 模式) 就行，
+段号自动顺延；report_gen 按标题关键字解析，重排/插入都不会错位。新指标只要在函数里调一次
+signal(key, value, band, hs300)，读数就自动进 signals.md 台账，供半年后按档位回溯收益。
 
 设计原则：脚本只给数据与事实，不做买卖决策；决策由使用者（或上层策略）完成。
 """
@@ -607,7 +612,7 @@ def pool_baseline(codes):
     return base
 
 
-def market_block(no="七", mode="noon"):
+def market_block(no, cfg=None, mode="noon"):
     """大盘资金流向 + 国家队载具动向。数据全部来自连接器快照，缺失就明说，不估算。
     行格式固定为「  标签<2+空格>数值」，report_gen 按标签解析。"""
     d = MX["data"] or {}
@@ -1045,7 +1050,7 @@ def news_feed(hours=6, max_pages=3):
     return uniq
 
 
-def news_block(no, mode="noon"):
+def news_block(no, cfg=None, mode="noon"):
     print(f"\n{no}、实时快讯（近期发生的事，便于即时判断）")
     hours = 14 if mode == "morning" else 6
     items = news_feed(hours=hours)
@@ -1362,18 +1367,165 @@ def ratio_block(no="八", cfg=None, mode="morning"):
     else:
         print(f"  口径        官网收盘口径；债腿=锚点+中证全债推进代理，误差约 ±1%")
 
+    signal("K04", f"{r:.3f}", o["band"][0], px)   # 台账留痕（仅午盘落盘）
+
 
 # ---------------------------------------------------------------- 早盘
-def impulse_block(no, mode="morning"):
+def impulse_block(no, cfg=None, mode="morning"):
     """K05 信贷脉冲：月频指标，在日报里只当「背景板 + 否决位」，不参与日内择时。
     实际计算与口径全在 credit_impulse.py / knowledge K05，这里只做调用与失败兜底。"""
     try:
         import credit_impulse as ci
-        ci.block(no, mode)
+        s = ci.block(no, mode)
+        if s:
+            signal("K05", f"{s['p_all']:+.2f}", s["band"], s.get("px"))   # 台账留痕（仅午盘落盘）
     except Exception as e:
         print()
         print(f"{no}、信贷脉冲（K05 社融存量同比差分 · 月频）")
         print(f"  取数失败：{e}（本指标不可用，按无信号处理）")
+
+
+# ---------------------------------------------------------------- 可插拔指标段
+# 固定前段（行情/持仓/关键位/异动）直接写在 morning/noon 里；只有「指标段」进注册表。
+# 加指标 = 这里加一行，序号自动顺延；report_gen 按标题关键字解析，与顺序无关。
+BLOCKS = [
+    # (key, 段标题关键字, 函数, 适用模式)
+    ("market",  "大盘资金与国家队", market_block,  ("morning", "noon")),
+    ("margin",  "融资融券",         margin_block,  ("morning", "noon")),
+    ("news",    "实时快讯",         news_block,    ("morning", "noon")),
+    ("impulse", "信贷脉冲",         impulse_block, ("morning", "noon")),
+    ("ratio",   "股债比价",         ratio_block,   ("morning", "noon")),
+    # tstats_block（做T战果）未进注册表：2026-11-16 用户要求报告不显示，函数保留备用
+]
+
+_CN = "零一二三四五六七八九十"
+
+
+def cn(n):
+    """1→一 … 10→十 11→十一 20→二十。段号只到二十，超出直接给数字。"""
+    if n <= 10:
+        return _CN[n]
+    if n < 20:
+        return "十" + _CN[n - 10]
+    if n == 20:
+        return "二十"
+    return str(n)
+
+
+def emit_blocks(cfg, mode, start):
+    """按 BLOCKS 顺序输出指标段，序号从 start 之后自动顺延（start = 固定前段数）。
+    单段异常不拖垮整份报告：打段头 + 失败原因，后续段继续，报告仍可交付。"""
+    n = start
+    for key, title, fn, modes in BLOCKS:
+        if mode not in modes:
+            continue
+        n += 1
+        try:
+            fn(cn(n), cfg, mode)
+        except Exception as e:
+            print(f"\n{cn(n)}、{title}")
+            print(f"  取数失败：{e}（本段不可用，按无信号处理）")
+    return n
+
+
+# ---------------------------------------------------------------- 指标读数台账
+# 每条读数记一行，半年后能回答「这个档位真的管用吗」。没有这张表，加第 12 个指标
+# 和第 3 个指标一样不可信——这是「指标体系」和「指标堆」的唯一区别。
+SIGNALS_MD = os.path.join(BASE, "signals.md")
+_SIG_TITLE = "## 台账"
+_SIG_COLS = "| date | key | value | band | hs300 | fwd20 |\n|---|---|---|---|---|---|\n"
+_SIG_HEAD = (
+    "# 指标读数台账\n\n"
+    "> 一行 = 一个指标在某天的一次读数。**脚本自动写入，不要手工改历史行**。\n"
+    "> 用途：把 value / band 与后续 20 个交易日的沪深300 涨跌对齐，按 band 分组算平均收益，\n"
+    "> 和全样本比。跑 `python brief.py --signals backfill` 回填 fwd20（完全离线，靠表内未来的点位算）。\n\n"
+    "## 字段\n\n"
+    "| 字段 | 含义 |\n|---|---|\n"
+    "| date | 读数日期（午盘口径，当日盘中） |\n"
+    "| key | 指标编号，如 K04 股债比价 / K05 信贷脉冲；新增指标沿用此格式 |\n"
+    "| value | 主读数，不带单位（比价=倍数，脉冲=pp） |\n"
+    "| band | 当时所处档位，**决定动作的就是它**，回溯按这一列分组 |\n"
+    "| hs300 | 当时沪深300点位，用来算未来收益 |\n"
+    "| fwd20 | 20 个交易日后的涨跌幅，未到期留空 |\n\n"
+)
+
+_SIG = {}          # 本次运行收集到的读数：key -> (value, band, hs300)
+
+
+def signal(key, value, band="", hs300=None):
+    """指标块内部登记一条读数，由 signals_flush 统一落盘。"""
+    _SIG[key] = (str(value), (band or "—").replace("|", "／"),
+                 f"{hs300:.2f}" if isinstance(hs300, (int, float)) else "—")
+
+
+def _sig_read():
+    """(说明部分, 台账行列表)。说明部分可手工补笔记，脚本只重写台账表。"""
+    txt = ""
+    if os.path.exists(SIGNALS_MD):
+        txt = open(SIGNALS_MD, encoding="utf-8").read()
+    pre = txt.split(_SIG_TITLE)[0] if txt else _SIG_HEAD
+    rows = [s.strip() for s in txt.splitlines() if s.strip().startswith("| 20")]
+    return pre, rows
+
+
+def _sig_write(pre, rows):
+    with open(SIGNALS_MD, "w", encoding="utf-8") as f:
+        f.write(pre.rstrip("\n") + "\n\n" + _SIG_TITLE + "\n\n" + _SIG_COLS
+                + "\n".join(rows) + "\n")
+
+
+def signals_flush(mode="noon"):
+    """把本次读数追加进 signals.md。同一天重跑覆盖同一 key 的旧行，不产生重复。
+    只写午盘：早盘是昨日收盘口径，写进去会和当天的行重复。"""
+    if mode != "noon" or not _SIG:
+        return
+    date = datetime.now().strftime("%Y-%m-%d")
+    pre, rows = _sig_read()
+
+    keep = []
+    for s in rows:
+        c = [x.strip() for x in s.strip("|").split("|")]
+        # 同一 key 当天重跑才覆盖；本次没取到数的指标（如 K05 失败）保留原有行
+        if len(c) > 1 and c[0] == date and c[1] in _SIG:
+            continue
+        keep.append(s)
+    for k, (v, band, px) in _SIG.items():
+        keep.append(f"| {date} | {k} | {v} | {band} | {px} | |")
+
+    _sig_write(pre, keep)
+    _SIG.clear()
+
+
+def signals_backfill():
+    """回填 fwd20：同一 key 的第 i 行对比第 i+20 行的沪深300点位。
+    完全离线——未来那天的点位已经记在表里了。中间有缺日会让偏移 ±1~2 天，不影响分组结论。"""
+    if not os.path.exists(SIGNALS_MD):
+        print("signals.md 不存在，先跑一次午盘面板攒数据")
+        return
+    pre, rows = _sig_read()
+    cells = [[c.strip() for c in s.strip("|").split("|")] for s in rows]
+    idx_by_key = {}
+    for i, c in enumerate(cells):
+        idx_by_key.setdefault(c[1], []).append(i)
+
+    n, skipped = 0, 0
+    for key, idx in idx_by_key.items():
+        for j, i in enumerate(idx):
+            if j + 20 >= len(idx):
+                continue
+            try:
+                a, b = float(cells[i][4]), float(cells[idx[j + 20]][4])
+            except (ValueError, IndexError):
+                skipped += 1
+                continue
+            if a <= 0:
+                skipped += 1
+                continue
+            cells[i][5] = f"{(b / a - 1) * 100:+.2f}%"
+            n += 1
+
+    _sig_write(pre, ["| " + " | ".join(c) + " |" for c in cells])
+    print(f"已回填 {n} 行 fwd20" + (f"，跳过 {skipped} 行（点位缺失）" if skipped else ""))
 
 
 def morning(cfg):
@@ -1472,12 +1624,7 @@ def morning(cfg):
             tags.append(f"跌破 {sup:.3f} 转弱")
         print(f"  · {h['name']}：{'；'.join(tags) if tags else '区间震荡，按支撑压力做'}")
 
-    market_block("五", "morning")
-    margin_block("六", cfg, "morning")
-    # 做T 战果：2026-11-16 用户要求报告不显示，tstats_block 保留备用
-    news_block("七", "morning")
-    impulse_block("八", "morning")
-    ratio_block("九", cfg, "morning")
+    emit_blocks(cfg, "morning", start=4)   # 固定前段 4 段（一~四），指标段从「五」起
 
     print_xcheck(cfg)
 
@@ -1617,12 +1764,11 @@ def noon(cfg):
             alerts.append(f"{h['name']} 量比 {q['vr']:.1f}，异动")
     print("  " + ("；\n  ".join(alerts) if alerts else "无明显异动"))
 
-    market_block("七", "noon")
-    margin_block("八", cfg, "noon")
-    # 做T 战果：2026-11-16 用户要求报告不显示，tstats_block 保留备用
-    news_block("九", "noon")
-    impulse_block("十", "noon")
-    ratio_block("十一", cfg, "noon")
+    emit_blocks(cfg, "noon", start=6)      # 固定前段 6 段（一~六），指标段从「七」起
+    try:
+        signals_flush("noon")              # 指标读数写 signals.md（一天一条，重跑覆盖）
+    except Exception as e:
+        print(f"\n  ⚠ 台账写入失败：{e}（不影响本次报告）")
 
     print_xcheck(cfg)
 
@@ -1657,8 +1803,12 @@ def main():
                     default=os.environ.get("BRIEF_SRC", "auto"),
                     help="报价源：auto=腾讯为主+东财校验（默认）/ tx / em")
     ap.add_argument("--selftest", metavar="CODE", help="打印腾讯原始字段，核对字段位")
+    ap.add_argument("--signals", choices=["backfill"],
+                    help="维护 signals.md 台账：回填 fwd20（离线，用表内未来的点位）")
     a = ap.parse_args()
     SRC[0] = a.src
+    if a.signals == "backfill":      # 台账维护不需要行情，放在 load_mx 之前
+        return signals_backfill()
     load_mx()
     if a.selftest:
         return selftest(a.selftest)

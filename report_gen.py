@@ -396,13 +396,19 @@ def read_text(path):
     return raw.decode("utf-8", "ignore")
 
 
-def section(text, start, end):
-    """截取「一、xxx」到「二、xxx」之间的内容"""
-    m = re.search(r"^\s*" + re.escape(start) + r"[、\s].*?$", text, re.M)
+def sec_title(text, title, next_title=None):
+    """按段标题关键字切段。序号只当「任意中文数字前缀」，不再当主键——
+    brief.py 重排段号、插入新指标都不会让解析错位（旧 section() 靠「一/二」定位，会整链错位）。
+    next_title=None 表示取到下一个段头或「附：」为止。
+    注意：不匹配时会返回空串而不是抛错（该段缺失时报告自动跳过，不静默串位）。"""
+    m = re.search(r"^\s*[一二三四五六七八九十]+、" + re.escape(title) + r".*$", text, re.M)
     if not m:
         return ""
     tail = text[m.end():]
-    n = re.search(r"^\s*" + re.escape(end) + r"[、\s]", tail, re.M)
+    if next_title is None:
+        n = re.search(r"^\s*(?:附[：:]|[一二三四五六七八九十]+、)", tail, re.M)
+    else:
+        n = re.search(r"^\s*[一二三四五六七八九十]+、" + re.escape(next_title), tail, re.M)
     return tail[:n.start()] if n else tail
 
 
@@ -492,13 +498,13 @@ def parse_levels(block):
 
 def parse_noon(text):
     d = parse_common(text)
-    d["indices"] = parse_indices(section(text, "一", "二"))
-    d["quotes"] = parse_noon_quote(section(text, "二", "三"))
-    d["flows"] = parse_flow(section(text, "三", "四"))
-    d["intraday"] = parse_intraday(section(text, "四", "五"))
-    d["levels"] = parse_levels(section(text, "五", "六"))
-    m = re.search(r"六、异动提示\s*\n(.*?)(?=^\s*(?:[一二三四五六七八九十]+、|附：)|\Z)", text, re.S | re.M)
-    d["alerts_raw"] = " ".join(x.strip() for x in (m.group(1).split("；") if m else []) if x.strip())
+    d["indices"] = parse_indices(sec_title(text, "A股上午", "持仓上午表现"))
+    d["quotes"] = parse_noon_quote(sec_title(text, "持仓上午表现", "资金流（上午累计"))
+    d["flows"] = parse_flow(sec_title(text, "资金流（上午累计", "日内位置与量能"))
+    d["intraday"] = parse_intraday(sec_title(text, "日内位置与量能", "日线关键位"))
+    d["levels"] = parse_levels(sec_title(text, "日线关键位", "异动提示"))
+    body = sec_title(text, "异动提示")
+    d["alerts_raw"] = " ".join(x.strip() for x in (body.split("；") if body else []) if x.strip())
     d["market"] = parse_market(text)
     d["margin"] = parse_margin(text)
     d["tstats"] = parse_tstats(text)   # 备用：报告暂不显示
@@ -547,10 +553,10 @@ def parse_focus(block):
 
 def parse_morning(text):
     d = parse_common(text)
-    d["us"] = parse_indices(section(text, "一", "二"))
-    d["asia"] = parse_indices(section(text, "二", "三"))
-    d["levels"] = parse_morning_levels(section(text, "三", "四"))
-    d["focus"] = parse_focus(section(text, "四", "五"))
+    d["us"] = parse_indices(sec_title(text, "隔夜美股", "亚洲早盘"))
+    d["asia"] = parse_indices(sec_title(text, "亚洲早盘", "持仓今日关键位"))
+    d["levels"] = parse_morning_levels(sec_title(text, "持仓今日关键位", "今日重点"))
+    d["focus"] = parse_focus(sec_title(text, "今日重点"))
     m = re.search(r"持仓市值合计[^：]*：([\d,]+)\s*元", text)
     d["total"] = m.group(1) if m else None
     d["market"] = parse_market(text)
@@ -1253,7 +1259,7 @@ def render_market(mk):
     k01 = mk.get("k01")
     if k01:
         nat += (f'<div class="mb-sub">份额 {k01["date"]} 主池 {k01["pool"]} 只合计 '
-                f'<b>{k01["shares"]/1e8:,.1f}亿份</b>，{E(k01["chg"])}'
+                f'<b>{k01["shares"]/1e8:,.1f}亿份</b>{E(k01["chg"])}'
                 f'｜加仓指数 <b>{k01["index"]:.1f}</b></div>')
 
     return (plain("market") +
